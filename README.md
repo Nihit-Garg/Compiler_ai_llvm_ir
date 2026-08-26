@@ -63,14 +63,7 @@ Never prompt an LLM with just "write me a parser" or "implement dead code elimin
 
 If the LLM's output doesn't match an existing interface in the codebase, don't change the interface to fit the LLM's output — go back and re-prompt with the correct interface attached.
 
-## Module Ownership
 
-| Module | Owner | Responsibility |
-|---|---|---|
-| Front-end (lexer, parser, semantic analysis) | Person A | Source → verified AST |
-| IR + Optimization passes | Person B | AST → LLVM IR, individual optimization passes |
-| AI Advisor + Verifier | Person C | LLM integration, differential testing, fallback logic |
-| Integration, spec, review | Lead | Interface consistency, final assembly, reporting |
 
 ## Toolchain & Environment
 
