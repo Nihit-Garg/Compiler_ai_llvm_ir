@@ -171,6 +171,22 @@ def generate_ir(ast: ASTNode) -> str:
 def optimize(ir: str) -> str:
     """Applies optimization passes to the given LLVM IR string and returns the optimized IR."""
     pass
+
+def constant_folding(ir: str) -> str:
+    """Evaluates arithmetic instructions with literal operands."""
+    pass
+
+def dead_code_elimination(ir: str) -> str:
+    """Removes unused instructions and unreachable basic blocks."""
+    pass
+
+def common_subexpression_elimination(ir: str) -> str:
+    """Eliminates redundant identical instructions within basic blocks."""
+    pass
+
+def peephole(ir: str) -> str:
+    """Applies small-window algebraic identities."""
+    pass
 ```
 
 ### `advisor/heuristics.py`
