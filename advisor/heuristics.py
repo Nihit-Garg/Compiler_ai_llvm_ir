@@ -32,6 +32,17 @@ import json
 import re
 from typing import List, Optional
 
+# ── Load .env file automatically (local development) ─────────────────────────
+# python-dotenv reads .env in the project root and injects variables into
+# os.environ.  This is a no-op if the file doesn't exist or if the variable
+# is already set (e.g. in CI via GitHub Secrets).
+try:
+    from dotenv import load_dotenv  # type: ignore
+    load_dotenv()  # looks for .env in cwd and parent dirs
+except ImportError:
+    pass  # python-dotenv not installed — fall back to plain env vars
+
+
 # ---------------------------------------------------------------------------
 # Valid pass names — must exactly match function names in optimizer/passes.py
 # ---------------------------------------------------------------------------

@@ -1,7 +1,10 @@
 # Core dependencies
 pytest
 
+# Loads .env file automatically (for local development)
+python-dotenv
+
 # Gemini LLM advisor (free tier)
 # Get your API key at: https://aistudio.google.com/apikey
-# Then set: export GEMINI_API_KEY="your-key-here"
+# Then fill it in your .env file (copy from .env.example)
 google-generativeai
