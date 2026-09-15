@@ -21,9 +21,22 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install pytest llvmlite
-        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+        pip install -r requirements.txt
 
     - name: Run tests
+      env:
+        # ─────────────────────────────────────────────────────────────
+        # PLACEHOLDER — add GEMINI_API_KEY to your GitHub repo secrets
+        # to enable the live LLM path in CI.
+        #
+        # Steps:
+        #   GitHub repo → Settings → Secrets → Actions → New secret
+        #   Name:  GEMINI_API_KEY
+        #   Value: your Gemini API key from https://aistudio.google.com/apikey
+        #
+        # Without it, the advisor gracefully falls back to the default
+        # pass order and all tests still pass.
+        # ─────────────────────────────────────────────────────────────
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       run: |
-        pytest tests/
+        pytest tests/ -v

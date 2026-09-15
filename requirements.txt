@@ -1,0 +1,7 @@
+# Core dependencies
+pytest
+
+# Gemini LLM advisor (free tier)
+# Get your API key at: https://aistudio.google.com/apikey
+# Then set: export GEMINI_API_KEY="your-key-here"
+google-generativeai

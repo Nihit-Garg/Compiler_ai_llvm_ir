@@ -194,14 +194,40 @@ def peephole(ir: str) -> str:
 from typing import List
 
 def get_optimization_advice(ir: str) -> List[str]:
-    """Analyzes the given IR and returns a list of suggested optimization passes."""
+    """
+    Analyzes the given LLVM IR and returns an ordered list of optimization
+    pass names to apply.  Falls back to the default fixed order on any error.
+    Pass names match the function names in optimizer/passes.py exactly.
+    """
     pass
 ```
 
 ### `verifier/check.py`
 ```python
 def verify_ir(ir: str) -> bool:
-    """Verifies that the generated LLVM IR is well-formed and valid."""
+    """Structural well-formedness check. True if IR has valid shape."""
+    pass
+
+def verify_equivalence(original_ir: str, optimized_ir: str) -> bool:
+    """
+    Differential testing.  Interprets both IRs on concrete integer inputs.
+    Returns True only if they produce identical outputs on all tested inputs.
+    False means the optimization changed observable behaviour — must reject.
+    """
+    pass
+```
+
+### `verifier/pipeline.py` (NEW)
+```python
+from typing import Dict, Any, Tuple
+
+def apply_optimizations(ir: str) -> Tuple[str, Dict[str, Any]]:
+    """
+    Full advisor → verify → fallback pipeline.
+    Returns (final_ir, report_dict).
+    report_dict keys: suggested_passes, decision, rejection_reason,
+                      fallback_passes, final_passes.
+    """
     pass
 ```
 
@@ -211,3 +237,12 @@ def generate_object_code(ir: str, target_triple: str) -> bytes:
     """Compiles the LLVM IR down to target machine object code."""
     pass
 ```
+
+## 5. Environment Variables
+
+| Variable | Required | Default | Purpose |
+|---|---|---|---|
+| `GEMINI_API_KEY` | No | — | Gemini API key. Get free at https://aistudio.google.com/apikey. If unset, the advisor silently returns the default pass order. |
+| `ADVISOR_MODEL` | No | `gemini-1.5-flash` | Gemini model name to use. |
+
+The system is designed to work **without** a live API key — the advisor falls back to the fixed default pass order, the verifier still runs, and all tests pass. The API key is only required to actually exercise the LLM-guided path.
