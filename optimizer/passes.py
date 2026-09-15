@@ -107,7 +107,7 @@ def _blocks_to_lines(blocks: List[Tuple[Optional[str], List[str]]]) -> List[str]
     out: List[str] = []
     for label, lines in blocks:
         if label is not None:
-            out.append(f"{label}:")
+            out.append(f"{label}:\n")  # preserve newline so join doesn't merge with next line
         out.extend(lines)
     return out
 
