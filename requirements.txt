@@ -8,3 +8,10 @@ python-dotenv
 # Get your API key at: https://aistudio.google.com/apikey
 # Then fill it in your .env file (copy from .env.example)
 google-generativeai
+
+# Backend: LLVM IR → native object code
+# Requires LLVM 14 system libraries:
+#   Ubuntu: sudo apt-get install llvm-14 llvm-14-dev
+#   macOS:  brew install llvm@14
+# Backend tests are auto-skipped if this is not installed.
+llvmlite==0.40.0

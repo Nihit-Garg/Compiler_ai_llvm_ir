@@ -18,7 +18,12 @@ jobs:
       with:
         python-version: "3.10"
 
-    - name: Install dependencies
+    - name: Install LLVM 14 (for llvmlite backend)
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y llvm-14 llvm-14-dev
+
+    - name: Install Python dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
@@ -26,17 +31,15 @@ jobs:
     - name: Run tests
       env:
         # ─────────────────────────────────────────────────────────────
-        # PLACEHOLDER — add GEMINI_API_KEY to your GitHub repo secrets
-        # to enable the live LLM path in CI.
-        #
-        # Steps:
-        #   GitHub repo → Settings → Secrets → Actions → New secret
+        # Add GEMINI_API_KEY to GitHub repo secrets to enable the live
+        # LLM path in CI.
+        #   Settings → Secrets → Actions → New secret
         #   Name:  GEMINI_API_KEY
-        #   Value: your Gemini API key from https://aistudio.google.com/apikey
+        #   Value: your key from https://aistudio.google.com/apikey
         #
-        # Without it, the advisor gracefully falls back to the default
-        # pass order and all tests still pass.
+        # Without it the advisor falls back to default passes and all
+        # tests still pass.
         # ─────────────────────────────────────────────────────────────
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       run: |
-        pytest tests/ -v
+        pytest tests/ -v --tb=short
