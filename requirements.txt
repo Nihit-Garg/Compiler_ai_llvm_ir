@@ -4,10 +4,10 @@ pytest
 # Loads .env file automatically (for local development)
 python-dotenv
 
-# Gemini LLM advisor (free tier)
+# Gemini LLM advisor — new official SDK (replaces deprecated google-generativeai)
 # Get your API key at: https://aistudio.google.com/apikey
 # Then fill it in your .env file (copy from .env.example)
-google-generativeai
+google-genai
 
 # Backend: LLVM IR → native object code
 # Requires LLVM 14 system libraries:

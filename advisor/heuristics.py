@@ -54,7 +54,7 @@ _VALID_PASSES = [
     "peephole",
 ]
 
-_DEFAULT_MODEL = "gemini-1.5-flash"
+_DEFAULT_MODEL = "gemini-2.5-flash-lite"  # ~1s responses; free tier
 
 
 # ---------------------------------------------------------------------------
@@ -140,18 +140,21 @@ def _default_passes() -> List[str]:
 def _call_gemini(prompt: str, api_key: str, model: str) -> Optional[str]:
     """
     Call the Gemini API and return the text of the first response candidate.
+    Uses the new `google-genai` SDK (google.genai).
     Returns None on any error (network, auth, quota, etc.).
     """
     try:
-        import google.generativeai as genai  # type: ignore
+        from google import genai  # type: ignore
     except ImportError:
-        # google-generativeai not installed — fall back silently
+        # google-genai not installed — fall back silently
         return None
 
     try:
-        genai.configure(api_key=api_key)
-        gemini_model = genai.GenerativeModel(model)
-        response = gemini_model.generate_content(prompt)
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model=model,
+            contents=prompt,
+        )
         return response.text
     except Exception:
         # Covers auth errors, network issues, quota exhaustion, etc.
