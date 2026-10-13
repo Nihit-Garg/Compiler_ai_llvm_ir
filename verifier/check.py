@@ -56,6 +56,8 @@ _BR_UNCOND_RE= re.compile(r'^\s+br label %([\w.]+)')
 _RET_RE      = re.compile(r'^\s+ret i32\s+([\w%.\-]+)')
 _CALL_RE     = re.compile(r'^\s+(%[\w.]+)\s*=\s*call i32 @([\w]+)\((.*?)\)')
 _CALL_ARG_RE = re.compile(r'i32 ([\w%.\-]+)')
+# Widening a comparison result to an integer:  %conv = zext i1 %cmp to i32
+_ZEXT_RE     = re.compile(r'^\s+(%[\w.]+)\s*=\s*zext i1 ([\w%.\-]+) to i32')
 
 _MAX_STEPS      = 100_000  # per run; beyond this the run is "inconclusive"
 _MAX_CALL_DEPTH = 100      # nested IR calls per run; beyond this "inconclusive"
@@ -258,6 +260,9 @@ class _Interpreter:
         m = _ICMP_RE.match(line)
         if m:
             return ('icmp',) + m.groups()
+        m = _ZEXT_RE.match(line)
+        if m:
+            return ('zext',) + m.groups()
         m = _BR_COND_RE.match(line)
         if m:
             return ('condbr',) + m.groups()
@@ -314,6 +319,12 @@ class _Interpreter:
             lhs = self._resolve(lhs_s, frame)
             rhs = self._resolve(rhs_s, frame)
             frame.regs[dst] = self._icmp(pred, lhs, rhs)
+            return None
+
+        if kind == 'zext':
+            # An i1 is held as 0 or 1 already; widening keeps the value.
+            _, dst, src = op
+            frame.regs[dst] = 1 if self._resolve(src, frame) else 0
             return None
 
         if kind == 'condbr':

@@ -86,3 +86,51 @@ class TestGenerateObjectCode:
                     out = getattr(passes, name)(out)
                 obj = generate_object_code(out)      # raises if LLVM rejects it
                 assert len(obj) > 0, f"empty object code for order {order}"
+
+
+# ---------------------------------------------------------------------------
+# Programs beyond the five samples: real LLVM must accept what we generate
+# ---------------------------------------------------------------------------
+
+from tests.test_ir_generator import PROGRAMS_BEYOND_SAMPLES
+
+
+def _compile(source: str) -> str:
+    from frontend.lexer import lex
+    from frontend.parser import parse
+    from frontend.semantic import analyze
+    from ir.generator import generate_ir
+    return generate_ir(analyze(parse(lex(source))))
+
+
+def _run_in_llvm(ir: str, fn: str, args):
+    """JIT-compile the IR with LLVM and call one function."""
+    import ctypes
+    llvm.initialize_native_target()
+    llvm.initialize_native_asmprinter()
+    module = llvm.parse_assembly(ir)
+    module.verify()
+    machine = llvm.Target.from_default_triple().create_target_machine()
+    engine = llvm.create_mcjit_compiler(module, machine)
+    engine.finalize_object()
+    proto = ctypes.CFUNCTYPE(ctypes.c_int32, *([ctypes.c_int32] * len(args)))
+    return proto(engine.get_function_address(fn))(*args)
+
+
+@pytest.mark.parametrize("name, source, fn, cases", PROGRAMS_BEYOND_SAMPLES,
+                         ids=[p[0] for p in PROGRAMS_BEYOND_SAMPLES])
+class TestProgramsBeyondSamples:
+
+    def test_unoptimized_ir_is_accepted_by_llvm(self, name, source, fn, cases):
+        assert len(generate_object_code(_compile(source))) > 0
+
+    def test_optimized_ir_is_accepted_by_llvm(self, name, source, fn, cases):
+        from optimizer.passes import optimize
+        assert len(generate_object_code(optimize(_compile(source)))) > 0
+
+    def test_llvm_computes_the_c_result(self, name, source, fn, cases):
+        from optimizer.passes import optimize
+        raw = _compile(source)
+        for ir in (raw, optimize(raw)):
+            for args, expected in cases:
+                assert _run_in_llvm(ir, fn, args) == expected, f"{name}{args}"

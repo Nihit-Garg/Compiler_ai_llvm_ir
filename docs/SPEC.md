@@ -133,6 +133,33 @@ return:
 }
 ```
 
+### Generator rules
+
+The examples above fix the output format. These rules cover what the examples do not show. IR that breaks any of them is rejected by LLVM.
+
+**Types.** Every MiniC expression is an `i32`. An `icmp` yields an `i1`.
+
+- A comparison used as a value (`int x = a < b;`, `return a == b;`, `(a < b) + 1`) is widened: `%conv = zext i1 %cmp to i32`.
+- A non-comparison used as an `if` or `while` condition (`if (a)`, `while (n)`) is tested against zero: `%tobool = icmp ne i32 %0, 0`.
+- A comparison used directly as a condition needs neither, as in Example 3.
+
+**Terminators.** Every basic block ends in exactly one `ret` or `br`, and has none before its end.
+
+- Statements after a `return` in the same block are unreachable and are not emitted.
+- If control can run off the end of a function, the function returns 0 (`ret i32 0`, or a store of 0 to `%retval` followed by `br label %return`). C leaves this case undefined; MiniC defines it.
+- A function with no `return` statement at all is still a semantic error.
+
+**Names.** LLVM keeps the parameters, values and labels of a function in one namespace, so every name is unique within a function.
+
+- Names are handed out in this order: `entry`, parameters, `%retval` and `return` (if used), parameter slots (`%x.addr`), variable slots in declaration order, then temporaries and labels as they are needed.
+- A name that is already taken gets the next free suffix: `add`, `add.1`, `add.2`.
+- So a MiniC variable named `add` keeps `%add` and the first addition becomes `%add.1`; a parameter named `entry` becomes `%entry.1`.
+
+**Scopes.** Each declaration has its own stack slot.
+
+- A declaration in an inner block that reuses a visible name gets a new slot (`%x.1`) and hides the outer variable until the block ends.
+- An initializer is evaluated before its variable is declared: in an inner-block `int x = x + 1;` the right-hand `x` is the outer variable. This matches `frontend/semantic.py`.
+
 ## 4. Module Interface Contracts
 
 All modules must strictly adhere to these interfaces. Teammates and their LLMs may fill in the bodies but CANNOT invent different interfaces.
