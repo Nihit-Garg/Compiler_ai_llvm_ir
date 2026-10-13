@@ -232,3 +232,163 @@ class TestInterpreter:
         module = _parse_ir(ir)
         interp = _Interpreter(module)
         assert interp.call("main", []) == 10  # double_it(5) = 10
+
+
+# ---------------------------------------------------------------------------
+# Regression tests: the verifier must not approve what it could not check
+# ---------------------------------------------------------------------------
+
+import verifier.check as check
+from verifier.check import equivalence_failure_reason, _generate_inputs
+
+
+def compile_src(src: str) -> str:
+    from frontend.lexer import lex
+    from frontend.parser import parse
+    from frontend.semantic import analyze
+    from ir.generator import generate_ir
+    return generate_ir(analyze(parse(lex(src))))
+
+
+def ret_const(value) -> str:
+    return f"define i32 @main() {{\nentry:\n  ret i32 {value}\n}}\n"
+
+
+class TestThirtyTwoBitArithmetic:
+    def test_sdiv_truncates_toward_zero(self):
+        orig = compile_src("int main() { return (0 - 7) / 2; }")
+        assert verify_equivalence(orig, ret_const(-3)) is True
+        assert verify_equivalence(orig, ret_const(-4)) is False
+
+    def test_multiplication_wraps(self):
+        orig = compile_src("int main() { return (65536 * 65536) / 2; }")
+        assert verify_equivalence(orig, ret_const(0)) is True
+        assert verify_equivalence(orig, ret_const(2147483648)) is False
+
+    def test_out_of_range_literal_is_wrapped(self):
+        assert verify_equivalence(ret_const(4294967296), ret_const(0)) is True
+
+
+class TestInconclusiveRuns:
+    LOOP_THEN = (
+        "int main() {{ int i = 0; while (i < 1000) {{ i = i + 1; }} return {}; }}"
+    )
+
+    def test_step_limit_on_both_sides_is_not_equivalence(self, monkeypatch):
+        """Two different programs that both outrun the step limit must not pass."""
+        monkeypatch.setattr(check, "_MAX_STEPS", 500)
+        a = compile_src(self.LOOP_THEN.format(1))
+        b = compile_src(self.LOOP_THEN.format(2))
+        assert verify_equivalence(a, b) is False
+        assert "inconclusive" in equivalence_failure_reason(a, b)
+
+    def test_same_programs_pass_once_the_limit_is_high_enough(self):
+        a = compile_src(self.LOOP_THEN.format(1))
+        assert verify_equivalence(a, a) is True
+
+    def test_different_results_after_a_long_loop_are_caught(self):
+        a = compile_src(self.LOOP_THEN.format(1))
+        b = compile_src(self.LOOP_THEN.format(2))
+        assert verify_equivalence(a, b) is False
+
+    def test_runaway_recursion_does_not_crash(self):
+        """fact(-1) never reaches its n == 0 base case; that input is skipped."""
+        ir = compile_src(
+            "int fact(int n) { if (n == 0) { return 1; } return n * fact(n - 1); }"
+        )
+        assert verify_equivalence(ir, ir) is True
+
+    def test_function_that_never_finishes_is_not_verified(self):
+        ir = compile_src(
+            "int spin() { int i = 0; while (i == 0) { i = 0; } return i; }"
+        )
+        assert verify_equivalence(ir, ir) is False
+
+
+class TestTrapsAndMalformedIr:
+    DIV = "define i32 @f(i32 %a) {\nentry:\n  %q = sdiv i32 1, %a\n  ret i32 %q\n}\n"
+
+    def test_trap_matches_trap(self):
+        assert verify_equivalence(self.DIV, self.DIV) is True
+
+    def test_trap_does_not_match_value(self):
+        no_trap = "define i32 @f(i32 %a) {\nentry:\n  ret i32 0\n}\n"
+        assert verify_equivalence(self.DIV, no_trap) is False
+
+    def test_unknown_instruction_is_not_ignored(self):
+        good = "define i32 @main() {\nentry:\n  ret i32 1\n}\n"
+        odd = "define i32 @main() {\nentry:\n  %x = xor i32 1, 1\n  ret i32 1\n}\n"
+        assert verify_equivalence(good, odd) is False
+
+    def test_undefined_register_is_rejected(self):
+        good = "define i32 @main() {\nentry:\n  ret i32 1\n}\n"
+        bad = "define i32 @main() {\nentry:\n  ret i32 %nope\n}\n"
+        assert verify_equivalence(good, bad) is False
+
+    def test_reason_is_none_for_equivalent_ir(self):
+        good = "define i32 @main() {\nentry:\n  ret i32 1\n}\n"
+        assert equivalence_failure_reason(good, good) is None
+
+
+class TestInputCoverage:
+    @pytest.mark.parametrize("n_params", [1, 2, 3, 4, 5])
+    def test_every_parameter_sees_every_test_value(self, n_params):
+        inputs = _generate_inputs(n_params)
+        assert 0 < len(inputs) <= check._MAX_TESTS
+        for position in range(n_params):
+            seen = {args[position] for args in inputs}
+            assert seen == set(check._TEST_VALUES), (
+                f"parameter {position} of {n_params} only saw {sorted(seen)}")
+
+
+# ---------------------------------------------------------------------------
+# count_instructions and llvm_check
+# ---------------------------------------------------------------------------
+
+from verifier.check import count_instructions, llvm_check
+
+
+class TestCountInstructions:
+    def test_counts_instructions_not_labels_or_comments(self):
+        ir = ("; comment\n"
+              "define i32 @f(i32 %a) {\n"
+              "entry:\n"
+              "  %x = add i32 %a, 1   ; inline comment\n"
+              "  br label %next\n"
+              "\n"
+              "next:\n"
+              "  ret i32 %x\n"
+              "}\n")
+        assert count_instructions(ir) == 3
+
+    def test_counts_across_functions(self):
+        ir = ("define i32 @f() {\nentry:\n  ret i32 1\n}\n\n"
+              "define i32 @g() {\nentry:\n  %y = add i32 1, 2\n  ret i32 %y\n}\n")
+        assert count_instructions(ir) == 3
+
+    def test_empty_ir_has_no_instructions(self):
+        assert count_instructions("") == 0
+
+
+class TestLLVMCheck:
+    def test_unavailable_without_llvmlite(self, monkeypatch):
+        import builtins
+        real_import = builtins.__import__
+
+        def no_llvmlite(name, *args, **kwargs):
+            if name.startswith("llvmlite"):
+                raise ImportError("no llvmlite here")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", no_llvmlite)
+        assert llvm_check("define i32 @f() {\nentry:\n  ret i32 0\n}\n") == ("unavailable", None)
+
+    def test_valid_ir_passes(self):
+        pytest.importorskip("llvmlite.binding")
+        assert llvm_check("define i32 @f() {\nentry:\n  ret i32 0\n}\n") == ("passed", None)
+
+    def test_invalid_ir_fails_with_llvm_message(self):
+        pytest.importorskip("llvmlite.binding")
+        status, error = llvm_check("define i32 @f() {\nentry:\n  ret i32 %x\n}\n")
+        assert status == "failed"
+        assert "%x" in error and "\n" not in error

@@ -10,7 +10,7 @@ from typing import Dict, List, Optional
 from dataclasses import dataclass
 from frontend.errors import SemanticError
 from frontend.ast import (
-    ASTNode, Program, FunctionDef, Param, Block,
+    ASTNode, Program, FunctionDef, Block,
     VarDecl, Assignment, IfStmt, WhileStmt, ReturnStmt, ExprStmt,
     BinaryOp, NumberLiteral, Identifier, FunctionCall
 )

@@ -15,17 +15,31 @@ Usage
 
 Options
 -------
-    --output, -o <file>   Write optimized IR to this path (default: <name>.ll)
-    --report, -r <file>   Write JSON report to this path   (default: <name>_report.json)
-    --compile, -c         Also compile IR → object code    (requires llvmlite + LLVM 14)
-    --no-opt              Skip the AI advisor; apply the default pass order directly
+    --output, -o <file>   Write optimized IR to this path (default: build/<name>.ll)
+    --report, -r <file>   Write JSON report to this path   (default: build/<name>_report.json)
+    --compile, -c         Also compile IR → object code    (requires llvmlite)
+    --no-advisor          Do not ask the LLM; use the default pass order (still verified).
+                          --no-opt is an older alias: it does NOT turn optimization off.
     --quiet, -q           Suppress banner and step output; print IR to stdout only
+
+The default build/ folder is created in the current working directory, so the
+source folder (and the expected-output files in tests/samples/) is never
+written to unless -o or -r points there.
+
+Exit status
+-----------
+    0   IR written, and it passed the final check (verify_ir, plus LLVM's own
+        parser and verifier when llvmlite is installed); with --compile, the
+        object file was written too
+    1   any error: unreadable source, compile error, a final IR check that
+        failed, or --compile that could not produce an object file.  The
+        report still records what happened whenever the pipeline got that far.
 
 Environment Variables
 ---------------------
     GEMINI_API_KEY   Free Gemini key — https://aistudio.google.com/apikey
                      If unset, the advisor falls back to the fixed default pass order.
-    ADVISOR_MODEL    Gemini model name (default: gemini-1.5-flash)
+    ADVISOR_MODEL    Gemini model name (default: gemini-3.5-flash-lite)
 
 Example
 -------
@@ -35,7 +49,6 @@ Example
 """
 
 import sys
-import os
 import json
 import time
 import argparse
@@ -51,7 +64,9 @@ from frontend.parser   import parse
 from frontend.semantic import analyze
 from ir.generator      import generate_ir
 from verifier.pipeline import apply_optimizations
-from optimizer.passes  import optimize as default_optimize
+from verifier.check    import verify_ir, llvm_check, LLVM_FAILED
+
+DEFAULT_BUILD_DIR = "build"
 
 
 # ---------------------------------------------------------------------------
@@ -133,7 +148,7 @@ def compile_source(
     t_start = time.perf_counter()
 
     # ── Read source ───────────────────────────────────────────────────────────
-    with open(src_path) as f:
+    with open(src_path, encoding="utf-8") as f:
         source = f.read()
 
     TOTAL = 4 if not do_compile else 5
@@ -167,75 +182,109 @@ def compile_source(
     _ok(quiet)
 
     # ── Step 4: Optimization ──────────────────────────────────────────────────
+    # Both modes go through the verified pipeline; --no-advisor (no_opt) only
+    # skips the LLM advisor and uses the default pass order as the suggestion.
     if no_opt:
-        _step(4, TOTAL, "Optimization (default passes) ..... ", quiet)
-        try:
-            final_ir = default_optimize(raw_ir)
-        except Exception as e:
-            _fail(f"Optimization error: {e}")
-            return 1
-        report = {
-            "suggested_passes": ["constant_folding", "dead_code_elimination",
-                                  "common_subexpression_elimination", "peephole"],
-            "decision": "accepted",
-            "rejection_reason": None,
-            "fallback_passes": None,
-            "final_passes": ["constant_folding", "dead_code_elimination",
-                              "common_subexpression_elimination", "peephole"],
-            "mode": "no-opt (default passes, AI advisor skipped)",
-        }
-        _ok(quiet)
+        _step(4, TOTAL, "Default passes + Verification ..... ", quiet)
     else:
         _step(4, TOTAL, "AI Optimization + Verification .... ", quiet)
-        try:
-            final_ir, report = apply_optimizations(raw_ir)
-        except Exception as e:
-            _fail(f"Optimization pipeline error: {e}")
-            return 1
+    try:
+        final_ir, report = apply_optimizations(raw_ir, use_advisor=not no_opt)
+    except Exception as e:
+        _fail(f"Optimization pipeline error: {e}")
+        return 1
+    if no_opt:
+        report["mode"] = "no-advisor (default passes, AI advisor skipped)"
 
-        if not quiet:
-            decision = report.get("decision", "unknown")
-            colour   = _GREEN if decision == "accepted" else _YELLOW
-            print(f"  {_c('✓', _GREEN)}")
-            print(f"       Suggested : {report.get('suggested_passes')}")
-            print(f"       Decision  : {_c(decision.upper(), colour, _BOLD)}", end="")
-            if decision == "rejected":
-                print(f"  ({report.get('rejection_reason', '')})")
-            else:
-                print()
-            print(f"       Applied   : {report.get('final_passes')}")
+    if not quiet:
+        decision = report.get("decision", "unknown")
+        colour   = _GREEN if decision == "accepted" else _YELLOW
+        print(f"  {_c('✓', _GREEN)}")
+        source = report.get("advisor_source")
+        model  = report.get("advisor_model")
+        print(f"       Advisor   : {source}" + (f" ({model})" if model else ""))
+        print(f"       Suggested : {report.get('suggested_passes')}")
+        print(f"       Decision  : {_c(decision.upper(), colour, _BOLD)}", end="")
+        if decision == "rejected":
+            print(f"  ({report.get('rejection_reason', '')})")
+        else:
+            print()
+        fallback_decision = report.get("fallback_decision")
+        if fallback_decision == "accepted":
+            print(f"       Fallback  : {_c('ACCEPTED', _GREEN, _BOLD)}"
+                  f"  (default pass order verified)")
+        elif fallback_decision == "rejected":
+            print(f"       Fallback  : {_c('REJECTED', _YELLOW, _BOLD)}"
+                  f"  ({report.get('fallback_rejection_reason', '')})")
+            print("                   IR left unoptimized")
+        print(f"       Applied   : {report.get('final_passes')}")
+        print(f"       Size      : {report.get('instructions_before')} → "
+              f"{report.get('instructions_after')} instructions")
+
+    exit_code = 0
+
+    # ── Final IR check ────────────────────────────────────────────────────────
+    # The verifier compared behaviour; this checks that what we are about to
+    # hand out is IR at all — our own structural check, and LLVM's parser and
+    # verifier whenever llvmlite is installed.
+    structural_ok = verify_ir(final_ir)
+    llvm_status, llvm_error = llvm_check(final_ir)
+    final_ok = structural_ok and llvm_status != LLVM_FAILED
+    report["final_ir_check"] = {
+        "verify_ir":  structural_ok,
+        "llvm":       llvm_status,
+        "llvm_error": llvm_error,
+        "passed":     final_ok,
+    }
+    if not final_ok:
+        problem = llvm_error if llvm_status == LLVM_FAILED else "verify_ir() rejected it"
+        _fail(f"Final IR check failed: {problem}")
+        exit_code = 1
 
     # ── Write IR ──────────────────────────────────────────────────────────────
+    # Written even when the final check failed, so it can be inspected; the
+    # report and the exit status say it is not valid.
     ir_path = Path(output_ir)
     ir_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(ir_path, "w") as f:
+    with open(ir_path, "w", encoding="utf-8") as f:
         f.write(final_ir)
-
-    # ── Write report ──────────────────────────────────────────────────────────
-    report["source_file"] = str(src_path)
-    report["ir_output"]   = str(ir_path)
-    report["elapsed_s"]   = round(time.perf_counter() - t_start, 3)
-
-    rpt_path = Path(output_report)
-    rpt_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(rpt_path, "w") as f:
-        json.dump(report, f, indent=2)
 
     # ── Step 5 (optional): Compile to object code ─────────────────────────────
     obj_path = None
     if do_compile:
+        report["object_output"] = None
+        report["compile_error"] = None
         _step(5, TOTAL, "Object Code Generation ............ ", quiet)
-        try:
-            from backend.codegen import generate_object_code
-            obj_bytes = generate_object_code(final_ir)
-            obj_path  = ir_path.with_suffix(".o")
-            with open(obj_path, "wb") as f:
-                f.write(obj_bytes)
-            _ok(quiet)
-        except RuntimeError as e:
-            _warn(str(e).splitlines()[0], quiet)
-        except Exception as e:
-            _warn(f"Object code generation failed: {e}", quiet)
+        if not final_ok:
+            report["compile_error"] = "skipped: final IR check failed"
+            _warn(report["compile_error"], quiet)
+        else:
+            try:
+                from backend.codegen import generate_object_code
+                obj_bytes = generate_object_code(final_ir)
+                obj_path  = ir_path.with_suffix(".o")
+                with open(obj_path, "wb") as f:
+                    f.write(obj_bytes)
+                report["object_output"] = str(obj_path)
+                _ok(quiet)
+            except Exception as e:
+                report["compile_error"] = f"{type(e).__name__}: {e}"
+                obj_path = None
+        if report["compile_error"] is not None:
+            if final_ok:
+                _fail(f"Object code generation failed: {str(report['compile_error']).splitlines()[0]}")
+            exit_code = 1
+
+    # ── Write report ──────────────────────────────────────────────────────────
+    report["source_file"] = str(src_path)
+    report["ir_output"]   = str(ir_path)
+    report["exit_code"]   = exit_code
+    report["elapsed_s"]   = round(time.perf_counter() - t_start, 3)
+
+    rpt_path = Path(output_report)
+    rpt_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(rpt_path, "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2)
 
     # ── Summary ───────────────────────────────────────────────────────────────
     if not quiet:
@@ -246,12 +295,13 @@ def compile_source(
             print(f"  OBJ  → {_c(str(obj_path), _CYAN)}")
         print(f"  JSON → {_c(str(rpt_path), _CYAN)}")
         elapsed = report["elapsed_s"]
-        print(f"\n  {_c(f'Done in {elapsed}s', _DIM)}\n")
+        status = "Done" if exit_code == 0 else "Finished with errors"
+        print(f"\n  {_c(f'{status} in {elapsed}s', _DIM)}\n")
     else:
         # Quiet mode: print IR to stdout
         print(final_ir, end="")
 
-    return 0
+    return exit_code
 
 
 # ---------------------------------------------------------------------------
@@ -266,32 +316,49 @@ def _build_parser() -> argparse.ArgumentParser:
         epilog=__doc__.split("Example")[1] if "Example" in __doc__ else "",
     )
     p.add_argument("source",            help="Path to the MiniC .c source file")
-    p.add_argument("--output", "-o",    help="Write optimized IR here (default: <name>.ll)")
-    p.add_argument("--report", "-r",    help="Write JSON report here (default: <name>_report.json)")
+    p.add_argument("--output", "-o",    help="Write optimized IR here (default: build/<name>.ll)")
+    p.add_argument("--report", "-r",    help="Write JSON report here (default: build/<name>_report.json)")
     p.add_argument("--compile", "-c",   action="store_true",
-                   help="Also compile IR → object code (requires llvmlite + LLVM 14)")
-    p.add_argument("--no-opt",          action="store_true",
-                   help="Skip AI advisor; apply default pass order directly")
+                   help="Also compile IR → object code (requires llvmlite)")
+    p.add_argument("--no-advisor", "--no-opt", dest="no_advisor", action="store_true",
+                   help="Do not ask the LLM advisor; apply the default pass order "
+                        "(still verified). --no-opt is an alias kept for old "
+                        "scripts; it does not disable optimization")
     p.add_argument("--quiet", "-q",     action="store_true",
                    help="Suppress step output; print optimized IR to stdout only")
     return p
 
 
+def _make_output_encoding_safe() -> None:
+    """
+    Keep printing from crashing on streams that cannot encode the banner's
+    box-drawing characters and ✓ / ⚠ / ✗ (for example output piped or
+    redirected on Windows, which uses cp1252).  Such characters are replaced
+    with "?"; the stream's encoding is left alone, and the IR itself is ASCII.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(errors="replace")
+
+
 def main() -> int:
+    _make_output_encoding_safe()
     args = _build_parser().parse_args()
 
     src   = Path(args.source)
     stem  = src.stem
+    build = Path(DEFAULT_BUILD_DIR)
 
-    ir_out  = args.output  or str(src.parent / f"{stem}.ll")
-    rpt_out = args.report  or str(src.parent / f"{stem}_report.json")
+    ir_out  = args.output  or str(build / f"{stem}.ll")
+    rpt_out = args.report  or str(build / f"{stem}_report.json")
 
     return compile_source(
         source_path=str(src),
         output_ir=ir_out,
         output_report=rpt_out,
         do_compile=args.compile,
-        no_opt=args.no_opt,
+        no_opt=args.no_advisor,
         quiet=args.quiet,
     )
 

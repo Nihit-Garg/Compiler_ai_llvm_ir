@@ -1,0 +1,122 @@
+{
+  "01_return": {
+    "suggested": [
+      "constant_folding",
+      "dead_code_elimination",
+      "common_subexpression_elimination",
+      "peephole"
+    ],
+    "source": "api_error",
+    "model": "gemini-3.5-flash-lite",
+    "seconds": 74.5
+  },
+  "02_add": {
+    "suggested": [
+      "common_subexpression_elimination",
+      "dead_code_elimination",
+      "constant_folding"
+    ],
+    "source": "llm",
+    "model": "gemini-3.5-flash-lite",
+    "seconds": 45.2
+  },
+  "03_if_else": {
+    "suggested": [
+      "common_subexpression_elimination",
+      "dead_code_elimination"
+    ],
+    "source": "llm",
+    "model": "gemini-3.5-flash-lite",
+    "seconds": 102.5
+  },
+  "04_while": {
+    "suggested": [
+      "common_subexpression_elimination",
+      "dead_code_elimination"
+    ],
+    "source": "llm",
+    "model": "gemini-3.5-flash-lite",
+    "seconds": 89.7
+  },
+  "05_func_call": {
+    "suggested": [
+      "common_subexpression_elimination",
+      "dead_code_elimination",
+      "constant_folding"
+    ],
+    "source": "llm",
+    "model": "gemini-3.5-flash-lite",
+    "seconds": 71.2
+  },
+  "b1_constant_chain": {
+    "suggested": [
+      "constant_folding",
+      "dead_code_elimination"
+    ],
+    "source": "llm",
+    "model": "gemini-3.5-flash-lite",
+    "seconds": 84.4
+  },
+  "b2_identities": {
+    "suggested": [
+      "constant_folding",
+      "dead_code_elimination",
+      "common_subexpression_elimination",
+      "peephole"
+    ],
+    "source": "api_error",
+    "model": "gemini-3.5-flash-lite",
+    "seconds": 5.7
+  },
+  "b3_fold_then_simplify": {
+    "suggested": [
+      "constant_folding",
+      "common_subexpression_elimination",
+      "dead_code_elimination"
+    ],
+    "source": "llm",
+    "model": "gemini-3.5-flash-lite",
+    "seconds": 57.0
+  },
+  "b4_mixed": {
+    "suggested": [
+      "constant_folding",
+      "dead_code_elimination",
+      "common_subexpression_elimination",
+      "peephole"
+    ],
+    "source": "api_error",
+    "model": "gemini-3.5-flash-lite",
+    "seconds": 6.9
+  },
+  "b5_two_params": {
+    "suggested": [
+      "peephole",
+      "common_subexpression_elimination",
+      "dead_code_elimination"
+    ],
+    "source": "llm",
+    "model": "gemini-3.5-flash-lite",
+    "seconds": 77.3
+  },
+  "b6_loop": {
+    "suggested": [
+      "constant_folding",
+      "peephole",
+      "dead_code_elimination"
+    ],
+    "source": "llm",
+    "model": "gemini-3.5-flash-lite",
+    "seconds": 49.1
+  },
+  "b7_calls": {
+    "suggested": [
+      "constant_folding",
+      "peephole",
+      "dead_code_elimination"
+    ],
+    "source": "llm",
+    "model": "gemini-3.5-flash-lite",
+    "seconds": 67.6
+  }
+}

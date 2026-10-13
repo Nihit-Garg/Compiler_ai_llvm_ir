@@ -9,9 +9,8 @@ python-dotenv
 # Then fill it in your .env file (copy from .env.example)
 google-genai
 
-# Backend: LLVM IR → native object code
-# Requires LLVM 14 system libraries:
-#   Ubuntu: sudo apt-get install llvm-14 llvm-14-dev
-#   macOS:  brew install llvm@14
+# Backend: LLVM IR → native object code, and the final LLVM check of the IR.
+# The wheel bundles its own LLVM; no system LLVM is needed.
+# Tested: llvmlite 0.40.0 (Python 3.10, 3.11), 0.49.0 (3.12), 0.50.0 (3.11, 3.12, 3.13).
 # Backend tests are auto-skipped if this is not installed.
-llvmlite==0.40.0
+llvmlite>=0.40.0

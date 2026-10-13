@@ -20,11 +20,23 @@ Design notes
 * For if-else statements where both branches contain a `return`, a %retval
   alloca is hoisted to the entry block and a shared `return:` block is emitted
   at function end (matching SPEC §3 Example 3 and tests/samples/03_if_else.ll).
+* Types: every MiniC expression is an `i32`.  A comparison yields an `i1`, so
+  it is widened with `zext` when used as a value, and a plain integer used as
+  a condition is tested with `icmp ne ..., 0`.  A comparison used directly as
+  a condition needs neither.
+* Every basic block ends in exactly one terminator.  Statements that follow a
+  `return` in the same block are unreachable and are not emitted; a function
+  whose control can run off its end returns 0.
+* Names are unique per function.  LLVM keeps values and labels in one
+  namespace, so a MiniC variable called `add`, `cmp`, `entry` or `retval`
+  must not clash with a generated name; the later one gets a `.N` suffix.
+* Each declaration has its own stack slot, so a variable that shadows another
+  in an inner block does not overwrite it.
 """
 
 from typing import List, Optional
 from frontend.ast import (
-    ASTNode, Program, FunctionDef, Param, Block,
+    ASTNode, Program, FunctionDef, Block,
     VarDecl, Assignment, IfStmt, WhileStmt, ReturnStmt, ExprStmt,
     BinaryOp, NumberLiteral, Identifier, FunctionCall,
 )
@@ -50,17 +62,24 @@ _CMP_OPS = {
 # Static analysis helpers
 # ---------------------------------------------------------------------------
 
-def _block_always_returns(block: Block) -> bool:
-    """Return True if the block unconditionally reaches a ReturnStmt."""
-    if not block.statements:
-        return False
-    last = block.statements[-1]
-    if isinstance(last, ReturnStmt):
+def _stmt_always_returns(stmt: ASTNode) -> bool:
+    """True if control can never continue past this statement."""
+    if isinstance(stmt, ReturnStmt):
         return True
-    if isinstance(last, IfStmt) and last.else_block is not None:
-        return (_block_always_returns(last.then_block) and
-                _block_always_returns(last.else_block))
+    if isinstance(stmt, IfStmt) and stmt.else_block is not None:
+        return (_block_always_returns(stmt.then_block) and
+                _block_always_returns(stmt.else_block))
     return False
+
+
+def _block_always_returns(block: Block) -> bool:
+    """
+    Return True if the block unconditionally reaches a ReturnStmt.
+
+    Any statement that always returns is enough, not only the last one:
+    whatever follows it is unreachable.
+    """
+    return any(_stmt_always_returns(stmt) for stmt in block.statements)
 
 
 def _fn_needs_retval(fn: FunctionDef) -> bool:
@@ -85,22 +104,26 @@ def _block_needs_retval(block: Block) -> bool:
     return False
 
 
-def _collect_var_decls(block: Block) -> List[str]:
+def _collect_var_decls(block: Block) -> List[VarDecl]:
     """
-    Walk the block (and all nested blocks) in order, collecting VarDecl names
+    Walk the block (and all nested blocks) in order, collecting VarDecl nodes
     in the order they appear.  Used to hoist allocas to the entry block.
+
+    Nodes are returned rather than names because two declarations may share a
+    name (an inner block shadowing an outer variable) and each needs its own
+    stack slot.
     """
-    names: List[str] = []
+    decls: List[VarDecl] = []
     for stmt in block.statements:
         if isinstance(stmt, VarDecl):
-            names.append(stmt.name)
+            decls.append(stmt)
         elif isinstance(stmt, IfStmt):
-            names.extend(_collect_var_decls(stmt.then_block))
+            decls.extend(_collect_var_decls(stmt.then_block))
             if stmt.else_block:
-                names.extend(_collect_var_decls(stmt.else_block))
+                decls.extend(_collect_var_decls(stmt.else_block))
         elif isinstance(stmt, WhileStmt):
-            names.extend(_collect_var_decls(stmt.body))
-    return names
+            decls.extend(_collect_var_decls(stmt.body))
+    return decls
 
 
 # ---------------------------------------------------------------------------
@@ -134,10 +157,18 @@ class _FunctionBuilder:
         self._current: _BasicBlock = entry
 
         self._tmp_counter: int = 0
-        self._label_counters: dict = {}
 
-        # name → alloca register (%x.addr for params, %x for vars)
-        self.var_alloca: dict = {}
+        # Every named value and label in the function, without the leading %.
+        # LLVM keeps both in one namespace, so one set covers them all.
+        self._used_names: set = {"entry"}
+        self._name_counters: dict = {}
+
+        # id(VarDecl node) → its alloca register; filled when allocas are hoisted
+        self.decl_alloca: dict = {}
+
+        # Lexical scopes, innermost last: MiniC name → alloca register
+        # (%x.addr for params, %x for vars).  Mirrors frontend/semantic.py.
+        self._scopes: List[dict] = [{}]
 
         self.retval: Optional[str] = None
         self.return_label: Optional[str] = None
@@ -151,10 +182,40 @@ class _FunctionBuilder:
         return name
 
     def fresh_label(self, kind: str) -> str:
-        """Named label: first call → 'cmp', subsequent → 'cmp.1', 'cmp.2' …"""
-        n = self._label_counters.get(kind, 0)
-        self._label_counters[kind] = n + 1
-        return kind if n == 0 else f"{kind}.{n}"
+        """
+        A name not yet used in this function: first call → 'cmp', subsequent
+        → 'cmp.1', 'cmp.2' …  Candidates already taken (for instance by a
+        MiniC variable that happens to be called `cmp`) are skipped.
+        Used for labels, named temporaries and stack slots alike.
+        """
+        n = self._name_counters.get(kind, 0)
+        while True:
+            name = kind if n == 0 else f"{kind}.{n}"
+            n += 1
+            if name not in self._used_names:
+                break
+        self._name_counters[kind] = n
+        self._used_names.add(name)
+        return name
+
+    # ── Scopes ──────────────────────────────────────────────────────────────
+
+    def push_scope(self):
+        self._scopes.append({})
+
+    def pop_scope(self):
+        self._scopes.pop()
+
+    def declare(self, name: str, alloca: str):
+        """Bind a MiniC name to a stack slot in the innermost scope."""
+        self._scopes[-1][name] = alloca
+
+    def lookup(self, name: str) -> str:
+        """Stack slot of the innermost visible declaration of `name`."""
+        for scope in reversed(self._scopes):
+            if name in scope:
+                return scope[name]
+        raise KeyError(f"No stack slot for variable '{name}'")
 
     # ── Block management ────────────────────────────────────────────────────
 
@@ -208,13 +269,18 @@ class _IRGenerator:
         b = _FunctionBuilder()
         self._b = b
 
+        # Parameters are named first, so they keep their MiniC names.  The
+        # one exception is a parameter called `entry`, which would clash with
+        # the entry block's label and becomes `%entry.1`.
+        param_regs = {p.name: f"%{b.fresh_label(p.name)}" for p in node.params}
+
         needs_retval = _fn_needs_retval(node)
         if needs_retval:
-            b.retval = "%retval"
-            b.return_label = "return"
+            b.retval = f"%{b.fresh_label('retval')}"
+            b.return_label = b.fresh_label("return")
 
         # Build function signature
-        param_strs = [f"i32 %{p.name}" for p in node.params]
+        param_strs = [f"i32 {param_regs[p.name]}" for p in node.params]
         sig = f"define i32 @{node.name}({', '.join(param_strs)}) {{"
 
         # ── Hoist ALL allocas to entry block (Clang convention) ──────────────
@@ -225,22 +291,36 @@ class _IRGenerator:
             b.emit_to_entry(f"{b.retval} = alloca i32")
 
         for p in node.params:
-            alloca_name = f"%{p.name}.addr"
-            b.var_alloca[p.name] = alloca_name
+            alloca_name = f"%{b.fresh_label(p.name + '.addr')}"
+            b.declare(p.name, alloca_name)
             b.emit_to_entry(f"{alloca_name} = alloca i32")
 
-        var_names = _collect_var_decls(node.body)
-        for vname in var_names:
-            alloca_name = f"%{vname}"
-            b.var_alloca[vname] = alloca_name
+        # One slot per declaration (not per name): a shadowing declaration in
+        # an inner block gets `%x.1`, and so does a variable whose name is
+        # already taken by a parameter or a generated name.
+        for decl in _collect_var_decls(node.body):
+            alloca_name = f"%{b.fresh_label(decl.name)}"
+            b.decl_alloca[id(decl)] = alloca_name
             b.emit_to_entry(f"{alloca_name} = alloca i32")
 
         # ── Store parameters into their allocas ──────────────────────────────
         for p in node.params:
-            b.emit(f"store i32 %{p.name}, i32* {b.var_alloca[p.name]}")
+            b.emit(f"store i32 {param_regs[p.name]}, i32* {b.lookup(p.name)}")
 
         # ── Emit body ────────────────────────────────────────────────────────
-        self._visit_block_stmts(node.body)
+        # The body shares the parameters' scope (as in frontend/semantic.py).
+        self._visit_block_stmts(node.body, new_scope=False)
+
+        # ── Control can run off the end of the function ──────────────────────
+        # e.g. `if (a > 0) { return 1; }` with nothing after it, or the exit
+        # block of a `while` that only ever leaves through a `return`.  The
+        # block still needs a terminator; such a function returns 0.
+        if not b._current.is_terminated():
+            if needs_retval:
+                b.emit(f"store i32 0, i32* {b.retval}")
+                b.emit(f"br label %{b.return_label}")
+            else:
+                b.emit("ret i32 0")
 
         # ── Shared return block (retval pattern) ─────────────────────────────
         if needs_retval:
@@ -255,22 +335,35 @@ class _IRGenerator:
 
     # ── Statements ────────────────────────────────────────────────────────────
 
-    def _visit_block_stmts(self, block: Block):
+    def _visit_block_stmts(self, block: Block, new_scope: bool = True):
+        b = self._b
+        if new_scope:
+            b.push_scope()
         for stmt in block.statements:
+            if b._current.is_terminated():
+                # Everything after a `return` in this block is unreachable.
+                # Emitting it would put instructions after the terminator.
+                break
             self._visit_statement(stmt)
+        if new_scope:
+            b.pop_scope()
 
     def _visit_statement(self, stmt: ASTNode):
         b = self._b
 
         if isinstance(stmt, VarDecl):
-            # Alloca was already hoisted; just emit the init store (if any)
+            # Alloca was already hoisted; just emit the init store (if any).
+            # The initializer is evaluated BEFORE the name is declared, so in
+            # `int x = x + 1;` inside an inner block the right-hand `x` is the
+            # outer variable.  frontend/semantic.py resolves it the same way.
+            alloca_name = b.decl_alloca[id(stmt)]
             if stmt.init is not None:
-                alloca_name = b.var_alloca[stmt.name]
                 val = self._visit_expr(stmt.init)
                 b.emit(f"store i32 {val}, i32* {alloca_name}")
+            b.declare(stmt.name, alloca_name)
 
         elif isinstance(stmt, Assignment):
-            alloca_name = b.var_alloca[stmt.name]
+            alloca_name = b.lookup(stmt.name)
             val = self._visit_expr(stmt.value)
             b.emit(f"store i32 {val}, i32* {alloca_name}")
 
@@ -302,7 +395,7 @@ class _IRGenerator:
         else_label = b.fresh_label("if.else") if stmt.else_block else None
         end_label  = b.fresh_label("if.end")
 
-        cmp_val = self._visit_expr(stmt.condition)
+        cmp_val = self._visit_cond(stmt.condition)
         false_target = else_label if stmt.else_block else end_label
         b.emit(f"br i1 {cmp_val}, label %{then_label}, label %{false_target}")
 
@@ -338,7 +431,7 @@ class _IRGenerator:
         b.emit(f"br label %{cond_label}")
 
         b.start_new_block(cond_label)
-        cmp_val = self._visit_expr(stmt.condition)
+        cmp_val = self._visit_cond(stmt.condition)
         b.emit(f"br i1 {cmp_val}, label %{body_label}, label %{end_label}")
 
         b.start_new_block(body_label)
@@ -348,7 +441,34 @@ class _IRGenerator:
 
         b.start_new_block(end_label)
 
-    # ── Expressions (return SSA value string) ─────────────────────────────────
+    # ── Conditions (return an i1 value string) ────────────────────────────────
+
+    def _emit_icmp(self, expr: BinaryOp) -> str:
+        """Emit the `icmp` for a comparison and return its i1 register."""
+        b = self._b
+        left_val  = self._visit_expr(expr.left)
+        right_val = self._visit_expr(expr.right)
+        cmp_reg   = f"%{b.fresh_label('cmp')}"
+        pred      = _CMP_OPS[expr.op]
+        b.emit(f"{cmp_reg} = icmp {pred} i32 {left_val}, {right_val}")
+        return cmp_reg
+
+    def _visit_cond(self, expr: ASTNode) -> str:
+        """
+        Evaluate `expr` as the condition of an `if` or `while`: an i1.
+
+        A comparison already is one.  Anything else is an i32 and, as in C,
+        counts as true when it is not zero.
+        """
+        b = self._b
+        if isinstance(expr, BinaryOp) and expr.op in _CMP_OPS:
+            return self._emit_icmp(expr)
+        val = self._visit_expr(expr)
+        bool_reg = f"%{b.fresh_label('tobool')}"
+        b.emit(f"{bool_reg} = icmp ne i32 {val}, 0")
+        return bool_reg
+
+    # ── Expressions (return an i32 value string) ──────────────────────────────
 
     def _visit_expr(self, expr: ASTNode) -> str:
         b = self._b
@@ -357,7 +477,7 @@ class _IRGenerator:
             return str(expr.value)
 
         elif isinstance(expr, Identifier):
-            alloca_name = b.var_alloca[expr.name]
+            alloca_name = b.lookup(expr.name)
             tmp = b.fresh_tmp()
             b.emit(f"{tmp} = load i32, i32* {alloca_name}")
             return tmp
@@ -365,12 +485,12 @@ class _IRGenerator:
         elif isinstance(expr, BinaryOp):
             op = expr.op
             if op in _CMP_OPS:
-                left_val  = self._visit_expr(expr.left)
-                right_val = self._visit_expr(expr.right)
-                cmp_reg   = f"%{b.fresh_label('cmp')}"
-                pred      = _CMP_OPS[op]
-                b.emit(f"{cmp_reg} = icmp {pred} i32 {left_val}, {right_val}")
-                return cmp_reg
+                # A comparison used as a value (`int x = a < b;`,
+                # `return a == b;`) is 0 or 1 as an i32, as in C.
+                cmp_reg  = self._emit_icmp(expr)
+                conv_reg = f"%{b.fresh_label('conv')}"
+                b.emit(f"{conv_reg} = zext i1 {cmp_reg} to i32")
+                return conv_reg
             elif op in _ARITH_OPS:
                 left_val  = self._visit_expr(expr.left)
                 right_val = self._visit_expr(expr.right)

@@ -1,0 +1,392 @@
+{
+  "programs": [
+    {
+      "program": "01_return",
+      "unoptimized": 1,
+      "default": 1,
+      "default_decision": "accepted",
+      "llm": 1,
+      "llm_source": "llm",
+      "llm_suggested": [],
+      "llm_decision": "accepted",
+      "llm_final_passes": [],
+      "best": 1,
+      "best_passes": []
+    },
+    {
+      "program": "02_add",
+      "unoptimized": 11,
+      "default": 11,
+      "default_decision": "accepted",
+      "llm": 11,
+      "llm_source": "llm",
+      "llm_suggested": [],
+      "llm_decision": "accepted",
+      "llm_final_passes": [],
+      "best": 11,
+      "best_passes": []
+    },
+    {
+      "program": "03_if_else",
+      "unoptimized": 17,
+      "default": 17,
+      "default_decision": "accepted",
+      "llm": 17,
+      "llm_source": "llm",
+      "llm_suggested": [],
+      "llm_decision": "accepted",
+      "llm_final_passes": [],
+      "best": 17,
+      "best_passes": []
+    },
+    {
+      "program": "04_while",
+      "unoptimized": 15,
+      "default": 15,
+      "default_decision": "accepted",
+      "llm": 15,
+      "llm_source": "llm",
+      "llm_suggested": [],
+      "llm_decision": "accepted",
+      "llm_final_passes": [],
+      "best": 15,
+      "best_passes": []
+    },
+    {
+      "program": "05_func_call",
+      "unoptimized": 10,
+      "default": 10,
+      "default_decision": "accepted",
+      "llm": 10,
+      "llm_source": "llm",
+      "llm_suggested": [
+        "peephole",
+        "dead_code_elimination"
+      ],
+      "llm_decision": "accepted",
+      "llm_final_passes": [
+        "peephole",
+        "dead_code_elimination"
+      ],
+      "best": 10,
+      "best_passes": []
+    },
+    {
+      "program": "b1_constant_chain",
+      "unoptimized": 5,
+      "default": 1,
+      "default_decision": "accepted",
+      "llm": 1,
+      "llm_source": "llm",
+      "llm_suggested": [
+        "constant_folding",
+        "dead_code_elimination"
+      ],
+      "llm_decision": "accepted",
+      "llm_final_passes": [
+        "constant_folding",
+        "dead_code_elimination"
+      ],
+      "best": 1,
+      "best_passes": [
+        "constant_folding",
+        "dead_code_elimination"
+      ]
+    },
+    {
+      "program": "b2_identities",
+      "unoptimized": 6,
+      "default": 6,
+      "default_decision": "accepted",
+      "llm": 4,
+      "llm_source": "llm",
+      "llm_suggested": [
+        "peephole",
+        "dead_code_elimination"
+      ],
+      "llm_decision": "accepted",
+      "llm_final_passes": [
+        "peephole",
+        "dead_code_elimination"
+      ],
+      "best": 4,
+      "best_passes": [
+        "peephole",
+        "dead_code_elimination"
+      ]
+    },
+    {
+      "program": "b3_fold_then_simplify",
+      "unoptimized": 10,
+      "default": 8,
+      "default_decision": "accepted",
+      "llm": 4,
+      "llm_source": "llm",
+      "llm_suggested": [
+        "constant_folding",
+        "peephole",
+        "dead_code_elimination"
+      ],
+      "llm_decision": "accepted",
+      "llm_final_passes": [
+        "constant_folding",
+        "peephole",
+        "dead_code_elimination"
+      ],
+      "best": 4,
+      "best_passes": [
+        "constant_folding",
+        "peephole",
+        "dead_code_elimination"
+      ]
+    },
+    {
+      "program": "b4_mixed",
+      "unoptimized": 12,
+      "default": 11,
+      "default_decision": "accepted",
+      "llm": 9,
+      "llm_source": "llm",
+      "llm_suggested": [
+        "peephole",
+        "constant_folding",
+        "common_subexpression_elimination",
+        "dead_code_elimination"
+      ],
+      "llm_decision": "accepted",
+      "llm_final_passes": [
+        "peephole",
+        "constant_folding",
+        "common_subexpression_elimination",
+        "dead_code_elimination"
+      ],
+      "best": 9,
+      "best_passes": [
+        "constant_folding",
+        "peephole",
+        "dead_code_elimination"
+      ]
+    },
+    {
+      "program": "b5_two_params",
+      "unoptimized": 13,
+      "default": 13,
+      "default_decision": "accepted",
+      "llm": 12,
+      "llm_source": "llm",
+      "llm_suggested": [
+        "peephole",
+        "common_subexpression_elimination",
+        "dead_code_elimination"
+      ],
+      "llm_decision": "accepted",
+      "llm_final_passes": [
+        "peephole",
+        "common_subexpression_elimination",
+        "dead_code_elimination"
+      ],
+      "best": 12,
+      "best_passes": [
+        "peephole",
+        "dead_code_elimination"
+      ]
+    },
+    {
+      "program": "b6_loop",
+      "unoptimized": 23,
+      "default": 23,
+      "default_decision": "accepted",
+      "llm": 21,
+      "llm_source": "llm",
+      "llm_suggested": [
+        "peephole",
+        "dead_code_elimination"
+      ],
+      "llm_decision": "accepted",
+      "llm_final_passes": [
+        "peephole",
+        "dead_code_elimination"
+      ],
+      "best": 21,
+      "best_passes": [
+        "peephole",
+        "dead_code_elimination"
+      ]
+    },
+    {
+      "program": "b7_calls",
+      "unoptimized": 16,
+      "default": 13,
+      "default_decision": "accepted",
+      "llm": 10,
+      "llm_source": "llm",
+      "llm_suggested": [
+        "constant_folding",
+        "peephole",
+        "dead_code_elimination"
+      ],
+      "llm_decision": "accepted",
+      "llm_final_passes": [
+        "constant_folding",
+        "peephole",
+        "dead_code_elimination"
+      ],
+      "best": 10,
+      "best_passes": [
+        "constant_folding",
+        "peephole",
+        "dead_code_elimination"
+      ]
+    },
+    {
+      "program": "b8_simplify_then_fold",
+      "unoptimized": 7,
+      "default": 7,
+      "default_decision": "accepted",
+      "llm": 3,
+      "llm_source": "llm",
+      "llm_suggested": [
+        "peephole",
+        "constant_folding",
+        "dead_code_elimination"
+      ],
+      "llm_decision": "accepted",
+      "llm_final_passes": [
+        "peephole",
+        "constant_folding",
+        "dead_code_elimination"
+      ],
+      "best": 3,
+      "best_passes": [
+        "peephole",
+        "constant_folding",
+        "dead_code_elimination"
+      ]
+    },
+    {
+      "program": "b9_simplify_then_fold_two",
+      "unoptimized": 12,
+      "default": 12,
+      "default_decision": "accepted",
+      "llm": 5,
+      "llm_source": "llm",
+      "llm_suggested": [
+        "peephole",
+        "constant_folding",
+        "dead_code_elimination"
+      ],
+      "llm_decision": "accepted",
+      "llm_final_passes": [
+        "peephole",
+        "constant_folding",
+        "dead_code_elimination"
+      ],
+      "best": 5,
+      "best_passes": [
+        "peephole",
+        "constant_folding",
+        "dead_code_elimination"
+      ]
+    },
+    {
+      "program": "b10_simplify_then_fold_div",
+      "unoptimized": 15,
+      "default": 15,
+      "default_decision": "accepted",
+      "llm": 7,
+      "llm_source": "llm",
+      "llm_suggested": [
+        "peephole",
+        "constant_folding",
+        "dead_code_elimination"
+      ],
+      "llm_decision": "accepted",
+      "llm_final_passes": [
+        "peephole",
+        "constant_folding",
+        "dead_code_elimination"
+      ],
+      "best": 7,
+      "best_passes": [
+        "peephole",
+        "constant_folding",
+        "dead_code_elimination"
+      ]
+    }
+  ],
+  "safety_net": [
+    {
+      "case": "a. LLM suggests a faulty pass (sub turned into add)",
+      "expected": "suggestion rejected; default order verified and used",
+      "suggested": [
+        "peephole",
+        "broken_pass"
+      ],
+      "advisor_source": "llm",
+      "decision": "rejected",
+      "rejection_reason": "@diff(-7, -7): original returned 0, optimized returned -14",
+      "fallback_decision": "accepted",
+      "fallback_rejection_reason": null,
+      "final_passes": [
+        "constant_folding",
+        "dead_code_elimination",
+        "common_subexpression_elimination",
+        "peephole"
+      ],
+      "ir_unchanged": false,
+      "final_equivalent": true
+    },
+    {
+      "case": "b. Program the verifier cannot check (never terminates)",
+      "expected": "suggestion and fallback both rejected; IR left unchanged",
+      "suggested": [
+        "peephole",
+        "dead_code_elimination"
+      ],
+      "advisor_source": "llm",
+      "decision": "rejected",
+      "rejection_reason": "@spin: inconclusive, no test input finished within 100000 steps / call depth 100",
+      "fallback_decision": "rejected",
+      "fallback_rejection_reason": "@spin: inconclusive, no test input finished within 100000 steps / call depth 100",
+      "final_passes": [],
+      "ir_unchanged": true,
+      "final_equivalent": true
+    },
+    {
+      "case": "c. LLM answer is unusable",
+      "expected": "advisor falls back to the default order, which is verified",
+      "suggested": [
+        "constant_folding",
+        "dead_code_elimination",
+        "common_subexpression_elimination",
+        "peephole"
+      ],
+      "advisor_source": "unusable_response",
+      "decision": "accepted",
+      "rejection_reason": null,
+      "fallback_decision": null,
+      "fallback_rejection_reason": null,
+      "final_passes": [
+        "constant_folding",
+        "dead_code_elimination",
+        "common_subexpression_elimination",
+        "peephole"
+      ],
+      "ir_unchanged": false,
+      "final_equivalent": true
+    },
+    {
+      "case": "d. LLM answers [] (no optimization)",
+      "expected": "no passes applied; IR unchanged",
+      "suggested": [],
+      "advisor_source": "llm",
+      "decision": "accepted",
+      "rejection_reason": null,
+      "fallback_decision": null,
+      "fallback_rejection_reason": null,
+      "final_passes": [],
+      "ir_unchanged": true,
+      "final_equivalent": true
+    }
+  ]
+}

@@ -10,11 +10,10 @@ Tests cover:
 """
 
 import os
-import pytest
 from unittest.mock import patch
 
 from verifier.pipeline import apply_optimizations
-from advisor.heuristics import _default_passes, _VALID_PASSES
+from advisor.heuristics import _default_passes
 
 
 SAMPLES_DIR = os.path.join(os.path.dirname(__file__), "samples")
@@ -130,16 +129,53 @@ class TestMockedAccepted:
 
 class TestMockedRejected:
     def test_rejected_triggers_fallback(self, monkeypatch):
+        """Suggestion rejected, default order verified → default order is used."""
+        from verifier.check import verify_equivalence as real_verify
         monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+        calls = []
+
+        def reject_first(orig, opt):
+            calls.append(opt)
+            if len(calls) == 1:
+                return False              # reject the suggestion only
+            return real_verify(orig, opt)
+
         with patch("advisor.heuristics._call_gemini", return_value='["peephole"]'), \
-             patch("verifier.pipeline.verify_equivalence", return_value=False):
+             patch("verifier.pipeline.verify_equivalence", side_effect=reject_first):
             ir = pipeline_ir("02_add.c")
             _, report = apply_optimizations(ir)
 
         assert report["decision"] == "rejected"
         assert report["rejection_reason"] is not None
         assert report["fallback_passes"] == _default_passes()
+        assert report["fallback_decision"] == "accepted"
         assert report["final_passes"] == _default_passes()
+
+    def test_unverified_fallback_returns_original_ir(self, monkeypatch):
+        """If the default order cannot be verified either, nothing is applied."""
+        monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+        with patch("advisor.heuristics._call_gemini", return_value='["peephole"]'), \
+             patch("verifier.pipeline.verify_equivalence", return_value=False):
+            ir = pipeline_ir("05_func_call.c")
+            final_ir, report = apply_optimizations(ir)
+
+        assert final_ir == ir
+        assert report["decision"] == "rejected"
+        assert report["fallback_passes"] == _default_passes()
+        assert report["fallback_decision"] == "rejected"
+        assert report["fallback_rejection_reason"] is not None
+        assert report["final_passes"] == []
+
+    def test_verifier_exception_is_a_rejection_not_a_crash(self, monkeypatch):
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        with patch("verifier.pipeline.verify_equivalence",
+                   side_effect=RecursionError("boom")):
+            ir = pipeline_ir("05_func_call.c")
+            final_ir, report = apply_optimizations(ir)
+
+        assert final_ir == ir
+        assert "Verifier error" in report["rejection_reason"]
+        assert report["final_passes"] == []
 
     def test_rejected_final_ir_still_has_ret(self, monkeypatch):
         monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
@@ -186,3 +222,170 @@ class TestEndToEnd:
             final_ir, report = apply_optimizations(ir)
             assert verify_ir(final_ir), f"final IR for {n}.c failed verify_ir"
             assert report["decision"] in ("accepted", "rejected")
+
+
+# ---------------------------------------------------------------------------
+# Regression tests: programs outside the five samples
+# ---------------------------------------------------------------------------
+
+def compile_src(src: str) -> str:
+    from frontend.lexer import lex
+    from frontend.parser import parse
+    from frontend.semantic import analyze
+    from ir.generator import generate_ir
+    return generate_ir(analyze(parse(lex(src))))
+
+
+class TestRegressions:
+    def test_negative_division_is_folded_correctly_and_accepted(self, monkeypatch):
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        ir = compile_src("int main() { return (0 - 7) / 2; }")
+        final_ir, report = apply_optimizations(ir)
+        assert report["decision"] == "accepted"
+        assert "ret i32 -3" in final_ir
+
+    def test_overflowing_multiplication_is_folded_correctly(self, monkeypatch):
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        ir = compile_src("int main() { return (65536 * 65536) / 2; }")
+        final_ir, report = apply_optimizations(ir)
+        assert report["decision"] == "accepted"
+        assert "ret i32 0" in final_ir
+
+    def test_recursive_function_does_not_crash_the_pipeline(self, monkeypatch):
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        ir = compile_src(
+            "int fact(int n) { if (n == 0) { return 1; } return n * fact(n - 1); }"
+        )
+        final_ir, report = apply_optimizations(ir)
+        assert report["decision"] == "accepted"
+        assert "define i32 @fact" in final_ir
+
+    def test_unverifiable_program_is_left_unoptimized(self, monkeypatch):
+        """A function that never finishes cannot be checked, so it is not changed."""
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        ir = compile_src(
+            "int spin() { int i = 0; while (i == 0) { i = 0 * 5; } return i; }"
+        )
+        final_ir, report = apply_optimizations(ir)
+        assert final_ir == ir
+        assert report["decision"] == "rejected"
+        assert report["fallback_decision"] == "rejected"
+        assert "inconclusive" in report["fallback_rejection_reason"]
+        assert report["final_passes"] == []
+
+
+class TestWithoutAdvisor:
+    """use_advisor=False (the CLI's --no-opt) skips the LLM, not the verifier."""
+
+    def test_advisor_is_not_consulted(self, monkeypatch):
+        # The pipeline now asks the advisor through get_advice_with_source();
+        # patching that (and the API call under it) keeps this test meaningful.
+        monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+        with patch("verifier.pipeline.get_advice_with_source",
+                   side_effect=AssertionError("advisor must not be called")), \
+             patch("advisor.heuristics._call_gemini",
+                   side_effect=AssertionError("LLM must not be called")):
+            ir = pipeline_ir("05_func_call.c")
+            final_ir, report = apply_optimizations(ir, use_advisor=False)
+        assert report["suggested_passes"] == _default_passes()
+        assert report["decision"] == "accepted"
+        assert report["final_passes"] == _default_passes()
+
+    def test_default_order_is_still_verified(self, monkeypatch):
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        with patch("verifier.pipeline.verify_equivalence", return_value=False):
+            ir = pipeline_ir("05_func_call.c")
+            final_ir, report = apply_optimizations(ir, use_advisor=False)
+        assert final_ir == ir
+        assert report["decision"] == "rejected"
+        assert report["final_passes"] == []
+
+
+# ---------------------------------------------------------------------------
+# Explicit empty suggestion: no passes, original IR
+# ---------------------------------------------------------------------------
+
+class TestEmptySuggestion:
+    def test_empty_answer_applies_no_passes(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+        with patch("advisor.heuristics._call_gemini", return_value="[]"):
+            ir = compile_src("int main() { return 2 + 3; }")
+            final_ir, report = apply_optimizations(ir)
+        assert final_ir == ir
+        assert report["suggested_passes"] == []
+        assert report["decision"] == "accepted"
+        assert report["final_passes"] == []
+        assert report["fallback_passes"] is None
+        assert report["advisor_source"] == "llm"
+
+    def test_unverifiable_program_is_not_sent_to_the_fallback(self, monkeypatch):
+        """[] needs no verification, so an inconclusive program is not 'rejected'."""
+        monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+        with patch("advisor.heuristics._call_gemini", return_value="[]"), \
+             patch("verifier.pipeline.verify_equivalence",
+                   side_effect=AssertionError("nothing to verify")):
+            ir = compile_src(
+                "int spin() { int i = 0; while (i == 0) { i = 0 * 5; } return i; }"
+            )
+            final_ir, report = apply_optimizations(ir)
+        assert final_ir == ir
+        assert report["decision"] == "accepted"
+        assert report["fallback_decision"] is None
+
+
+# ---------------------------------------------------------------------------
+# Advisor source and instruction counts in the report
+# ---------------------------------------------------------------------------
+
+class TestAdvisorSourceInReport:
+    def test_no_api_key(self, monkeypatch):
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        _, report = apply_optimizations(pipeline_ir("02_add.c"))
+        assert report["advisor_source"] == "no_api_key"
+        assert report["advisor_model"] is None
+
+    def test_llm(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+        monkeypatch.setenv("ADVISOR_MODEL", "test-model")
+        with patch("advisor.heuristics._call_gemini", return_value='["peephole"]'):
+            _, report = apply_optimizations(pipeline_ir("02_add.c"))
+        assert report["advisor_source"] == "llm"
+        assert report["advisor_model"] == "test-model"
+
+    def test_api_error(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+        with patch("advisor.heuristics._call_gemini", return_value=None), \
+             patch("advisor.heuristics._genai_installed", return_value=True):
+            _, report = apply_optimizations(pipeline_ir("02_add.c"))
+        assert report["advisor_source"] == "api_error"
+        assert report["suggested_passes"] == _default_passes()
+
+    def test_unusable_response(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+        with patch("advisor.heuristics._call_gemini", return_value="no idea"):
+            _, report = apply_optimizations(pipeline_ir("02_add.c"))
+        assert report["advisor_source"] == "unusable_response"
+
+    def test_skipped(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+        _, report = apply_optimizations(pipeline_ir("02_add.c"), use_advisor=False)
+        assert report["advisor_source"] == "skipped"
+        assert report["advisor_model"] is None
+
+
+class TestInstructionCounts:
+    def test_counts_show_the_improvement(self, monkeypatch):
+        from verifier.check import count_instructions
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        ir = compile_src("int main() { int x = 2 + 3; return x * 1; }")
+        final_ir, report = apply_optimizations(ir)
+        assert report["instructions_before"] == count_instructions(ir)
+        assert report["instructions_after"] == count_instructions(final_ir)
+        assert report["instructions_after"] < report["instructions_before"]
+
+    def test_counts_equal_when_ir_is_left_unchanged(self, monkeypatch):
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        with patch("verifier.pipeline.verify_equivalence", return_value=False):
+            _, report = apply_optimizations(pipeline_ir("05_func_call.c"))
+        assert report["final_passes"] == []
+        assert report["instructions_after"] == report["instructions_before"]

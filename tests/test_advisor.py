@@ -8,8 +8,6 @@ Tests cover:
 - End-to-end with a mocked Gemini response
 """
 
-import os
-import pytest
 from unittest.mock import patch, MagicMock
 
 from advisor.heuristics import (
@@ -176,3 +174,126 @@ class TestGetOptimizationAdvice:
             result = get_optimization_advice("define i32 @f() {\nentry:\n  ret i32 0\n}\n")
         for p in result:
             assert p in _VALID_PASSES
+
+
+# ---------------------------------------------------------------------------
+# Explicit empty answer and advisor source
+# ---------------------------------------------------------------------------
+
+from advisor.heuristics import _parse_response_strict, get_advice_with_source
+
+_IR = "define i32 @main() {\nentry:\n  ret i32 42\n}\n"
+
+
+class TestParseResponseStrict:
+    def test_explicit_empty_array_is_an_answer(self):
+        assert _parse_response_strict("[]") == []
+
+    def test_empty_array_in_prose_is_an_answer(self):
+        assert _parse_response_strict("No passes needed: []") == []
+
+    def test_no_array_is_unusable(self):
+        assert _parse_response_strict("Sorry, I cannot help.") is None
+
+    def test_malformed_json_is_unusable(self):
+        assert _parse_response_strict('["peephole", ') is None
+
+    def test_only_unknown_names_is_unusable(self):
+        assert _parse_response_strict('["fancy_new_pass"]') is None
+
+    def test_valid_names_are_kept_in_order(self):
+        assert _parse_response_strict('["peephole", "x", "constant_folding"]') == \
+            ["peephole", "constant_folding"]
+
+
+class TestExplicitEmptyAnswer:
+    def test_empty_answer_is_honoured(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "fake-key-for-test")
+        with patch("advisor.heuristics._call_gemini", return_value="[]"):
+            assert get_optimization_advice(_IR) == []
+
+    def test_array_of_unknown_names_still_falls_back(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "fake-key-for-test")
+        with patch("advisor.heuristics._call_gemini", return_value='["inline"]'):
+            assert get_optimization_advice(_IR) == _default_passes()
+
+
+class TestAdviceSource:
+    def test_no_api_key(self, monkeypatch):
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        passes, info = get_advice_with_source(_IR)
+        assert passes == _default_passes()
+        assert info == {"source": "no_api_key", "model": None}
+
+    def test_llm_answer(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "fake-key-for-test")
+        monkeypatch.delenv("ADVISOR_MODEL", raising=False)
+        with patch("advisor.heuristics._call_gemini", return_value='["peephole"]') as call:
+            passes, info = get_advice_with_source(_IR)
+        assert passes == ["peephole"]
+        assert info["source"] == "llm"
+        assert info["model"] == call.call_args[0][2]   # the model actually asked
+
+    def test_explicit_empty_answer_comes_from_the_llm(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "fake-key-for-test")
+        with patch("advisor.heuristics._call_gemini", return_value="[]"):
+            passes, info = get_advice_with_source(_IR)
+        assert passes == []
+        assert info["source"] == "llm"
+
+    def test_api_error(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "fake-key-for-test")
+        with patch("advisor.heuristics._call_gemini", return_value=None), \
+             patch("advisor.heuristics._genai_installed", return_value=True):
+            passes, info = get_advice_with_source(_IR)
+        assert passes == _default_passes()
+        assert info["source"] == "api_error"
+
+    def test_sdk_not_installed(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "fake-key-for-test")
+        with patch("advisor.heuristics._call_gemini", return_value=None), \
+             patch("advisor.heuristics._genai_installed", return_value=False):
+            passes, info = get_advice_with_source(_IR)
+        assert passes == _default_passes()
+        assert info["source"] == "sdk_unavailable"
+
+    def test_unusable_response(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "fake-key-for-test")
+        with patch("advisor.heuristics._call_gemini", return_value="Sorry."):
+            passes, info = get_advice_with_source(_IR)
+        assert passes == _default_passes()
+        assert info["source"] == "unusable_response"
+
+    def test_model_comes_from_environment(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "fake-key-for-test")
+        monkeypatch.setenv("ADVISOR_MODEL", "my-model")
+        with patch("advisor.heuristics._call_gemini", return_value='["peephole"]') as call:
+            _, info = get_advice_with_source(_IR)
+        assert info["model"] == "my-model"
+        assert call.call_args[0][2] == "my-model"
+
+    def test_get_optimization_advice_returns_the_same_list(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "fake-key-for-test")
+        with patch("advisor.heuristics._call_gemini",
+                   return_value='["dead_code_elimination", "peephole"]'):
+            assert get_optimization_advice(_IR) == get_advice_with_source(_IR)[0]
+
+
+# ---------------------------------------------------------------------------
+# The prompt explains what each pass does and what the goal is
+# ---------------------------------------------------------------------------
+
+class TestPromptExplainsPasses:
+    def test_every_pass_has_a_description_in_the_prompt(self):
+        from advisor.heuristics import _PASS_DESCRIPTIONS
+        prompt = _build_prompt(_IR)
+        assert set(_PASS_DESCRIPTIONS) == set(_VALID_PASSES)
+        for name in _VALID_PASSES:
+            assert f"- {name}: {_PASS_DESCRIPTIONS[name]}" in prompt
+
+    def test_prompt_says_dce_only_cleans_up_after_earlier_passes(self):
+        prompt = _build_prompt(_IR)
+        assert "cleans up after passes that run before it" in prompt
+
+    def test_prompt_states_the_goal(self):
+        assert "fewest instructions" in _build_prompt(_IR)

@@ -112,15 +112,100 @@ def _blocks_to_lines(blocks: List[Tuple[Optional[str], List[str]]]) -> List[str]
     return out
 
 
+def _split_function_text(
+    fn_text: str,
+) -> Optional[Tuple[List[str], List[str], List[str]]]:
+    """
+    Split one chunk from _split_into_functions into (head, body, tail).
+
+    head: everything up to and including the 'define ...' line
+    body: the basic blocks
+    tail: the closing '}' and anything after it (e.g. the blank line that
+          separates this function from the next one)
+
+    Returns None if the chunk contains no function definition.  Keeping the
+    closing brace out of the body matters: otherwise it is treated as part of
+    the last basic block and disappears if that block is removed.
+    """
+    lines = fn_text.splitlines(keepends=True)
+    start = next(
+        (i for i, line in enumerate(lines) if line.startswith("define ")), None
+    )
+    if start is None:
+        return None
+    for end in range(len(lines) - 1, start, -1):
+        if lines[end].strip() == "}":
+            return lines[:start + 1], lines[start + 1:end], lines[end:]
+    return lines[:start + 1], lines[start + 1:], []
+
+
+# An unnamed temporary (%0, %1, ...) at a definition site / anywhere in a line
+_NUMBERED_DEF_RE = re.compile(r'^\s+%(\d+)\s*=')
+_NUMBERED_REF_RE = re.compile(r'%(\d+)(?![\w.])')
+
+
+def _renumber_temporaries(lines: List[str]) -> List[str]:
+    """
+    Renumber unnamed temporaries so they run %0, %1, %2, ... in order.
+
+    LLVM rejects a function whose unnamed values are not numbered
+    consecutively ("instruction expected to be numbered '%N'").  Any pass
+    that deletes an instruction defining such a value must therefore close
+    the gap.  Lines are returned unchanged when the numbering is already
+    consecutive.
+    """
+    mapping: Dict[str, str] = {}
+    for line in lines:
+        m = _NUMBERED_DEF_RE.match(line)
+        if m and m.group(1) not in mapping:
+            mapping[m.group(1)] = str(len(mapping))
+    if all(old == new for old, new in mapping.items()):
+        return lines
+
+    def rename(code: str) -> str:
+        return _NUMBERED_REF_RE.sub(
+            lambda m: "%" + mapping.get(m.group(1), m.group(1)), code)
+
+    out: List[str] = []
+    for line in lines:
+        # Leave trailing comments (e.g. "; folded -> 5") exactly as they are.
+        code, sep, comment = line.partition(";")
+        out.append(rename(code) + sep + comment)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Pass 1: Constant Folding
 # ---------------------------------------------------------------------------
 
+_INT32_MIN = -(2 ** 31)
+
+
+def _wrap_i32(value: int) -> int:
+    """Reduce a Python int to the signed 32-bit value LLVM's i32 would hold."""
+    return ((value + 2 ** 31) % 2 ** 32) - 2 ** 31
+
+
+def _fold_sdiv(a: int, b: int) -> Optional[int]:
+    """
+    Signed division as LLVM's `sdiv` (and C) define it: truncate toward zero.
+
+    Returns None when the result is undefined (division by zero, or
+    INT_MIN / -1 which overflows) so the instruction is left alone.
+    """
+    if b == 0 or (a == _INT32_MIN and b == -1):
+        return None
+    quotient = abs(a) // abs(b)
+    return -quotient if (a < 0) != (b < 0) else quotient
+
+
+# Operands are wrapped to i32 before folding and results after, so the folded
+# constant is exactly what the unfolded instruction would have computed.
 _FOLD_OPS = {
-    'add':  lambda a, b: a + b,
-    'sub':  lambda a, b: a - b,
-    'mul':  lambda a, b: a * b,
-    'sdiv': lambda a, b: a // b if b != 0 else None,
+    'add':  lambda a, b: _wrap_i32(a + b),
+    'sub':  lambda a, b: _wrap_i32(a - b),
+    'mul':  lambda a, b: _wrap_i32(a * b),
+    'sdiv': _fold_sdiv,
 }
 
 _IMMEDIATE_RE = re.compile(r'^-?\d+$')
@@ -150,7 +235,8 @@ def _fold_function(fn_text: str) -> str:
             if _is_immediate(str(lhs_val)) and _is_immediate(str(rhs_val)):
                 folded_fn = _FOLD_OPS.get(op)
                 if folded_fn is not None:
-                    computed = folded_fn(int(lhs_val), int(rhs_val))
+                    computed = folded_fn(_wrap_i32(int(lhs_val)),
+                                         _wrap_i32(int(rhs_val)))
                     if computed is not None:
                         # Record that dst is now a known constant.
                         known[dst] = computed
@@ -163,7 +249,7 @@ def _fold_function(fn_text: str) -> str:
                         # Elide the instruction entirely (dead after folding).
                         result.append(
                             line.rstrip('\n').rstrip('\r') +
-                            f"  ; folded → {computed}\n"
+                            f"  ; folded -> {computed}\n"
                         )
                         continue
         # Substitute any known constants into this line's operands
@@ -204,18 +290,11 @@ def constant_folding(ir: str) -> str:
 
 def _dce_function(fn_text: str) -> str:
     """Remove dead instructions within a single function."""
-    lines = fn_text.splitlines(keepends=True)
-
-    # Separate header ("define …") and closing "}"
-    if not lines:
+    # Separate header ("define …"), body and closing "}"
+    parts = _split_function_text(fn_text)
+    if parts is None:
         return fn_text
-    header = lines[0]
-    if lines and lines[-1].strip() == "}":
-        footer = lines[-1]
-        body_lines = lines[1:-1]
-    else:
-        footer = ""
-        body_lines = lines[1:]
+    head, body_lines, tail = parts
 
     # ── Phase A: remove unreachable blocks ──────────────────────────────────
     # A basic block is unreachable if it is not the entry block AND no
@@ -245,9 +324,7 @@ def _dce_function(fn_text: str) -> str:
                 use_count[ref] += 1
 
     # An instruction is dead if its result is defined but never used AND
-    # the instruction has no side effects (i.e., not store/call/br/ret).
-    _SIDE_EFFECT_RE = re.compile(r'^\s+(store|call|br|ret|;)')
-
+    # removing it cannot change behaviour (see _must_keep).
     changed = True
     while changed:
         changed = False
@@ -256,8 +333,7 @@ def _dce_function(fn_text: str) -> str:
             m = _DEF_RE.match(line)
             if m:
                 name = m.group(1)
-                if (use_count.get(name, 1) == 0
-                        and not _SIDE_EFFECT_RE.match(line)):
+                if use_count.get(name, 1) == 0 and not _must_keep(line):
                     # Dead — omit and decrement use counts of its operands
                     refs = _USE_RE.findall(line)
                     for ref in refs:
@@ -268,8 +344,37 @@ def _dce_function(fn_text: str) -> str:
             new_body.append(line)
         body_lines = new_body
 
-    result_lines = [header] + body_lines + ([footer] if footer else [])
-    return "".join(result_lines)
+    # Deleting an unnamed temporary leaves a gap in the %0, %1, ... sequence.
+    body_lines = _renumber_temporaries(body_lines)
+
+    return "".join(head + body_lines + tail)
+
+
+# A value-producing call:  %call = call i32 @f(...)
+_CALL_DEF_RE = re.compile(r'^\s+%\S+\s*=\s*call\b')
+
+# A division, capturing the divisor:  %q = sdiv i32 %a, %b
+_SDIV_DEF_RE = re.compile(r'^\s+%\S+\s*=\s*sdiv\s+i32\s+[%\w\-.]+,\s*([%\w\-.]+)')
+
+
+def _must_keep(line: str) -> bool:
+    """
+    True if an instruction must survive even when its result is unused.
+
+    * Calls: the callee may loop forever or trap, so dropping the call can
+      change what the program does.
+    * Divisions whose divisor is not a known non-zero constant: they may trap
+      (division by zero), and removing the trap is a visible change.
+    """
+    if _CALL_DEF_RE.match(line):
+        return True
+    m = _SDIV_DEF_RE.match(line)
+    if m:
+        divisor = m.group(1)
+        if not _is_immediate(divisor):
+            return True
+        return _wrap_i32(int(divisor)) in (0, -1)   # /0 traps, INT_MIN/-1 overflows
+    return False
 
 
 def _remove_unreachable_blocks(
@@ -339,17 +444,10 @@ def dead_code_elimination(ir: str) -> str:
 
 def _cse_function(fn_text: str) -> str:
     """Apply CSE within each basic block of a single function."""
-    lines = fn_text.splitlines(keepends=True)
-    if not lines:
+    parts = _split_function_text(fn_text)
+    if parts is None:
         return fn_text
-
-    header = lines[0]
-    if lines and lines[-1].strip() == "}":
-        footer = lines[-1]
-        body_lines = lines[1:-1]
-    else:
-        footer = ""
-        body_lines = lines[1:]
+    head, body_lines, tail = parts
 
     blocks = _split_into_blocks(body_lines)
     new_blocks: List[Tuple[Optional[str], List[str]]] = []
@@ -357,9 +455,8 @@ def _cse_function(fn_text: str) -> str:
     for label, blines in blocks:
         new_blocks.append((label, _cse_block(blines)))
 
-    new_body = _blocks_to_lines(new_blocks)
-    result_lines = [header] + new_body + ([footer] if footer else [])
-    return "".join(result_lines)
+    new_body = _renumber_temporaries(_blocks_to_lines(new_blocks))
+    return "".join(head + new_body + tail)
 
 
 # Matches arithmetic / icmp instructions for CSE
@@ -465,7 +562,7 @@ def _peephole_function(fn_text: str) -> str:
                     # Elide the original instruction
                     result.append(
                         new_line.rstrip('\n').rstrip('\r') +
-                        f"  ; peephole → {replacement}\n"
+                        f"  ; peephole -> {replacement}\n"
                     )
                     continue
                 elif isinstance(replacement, tuple):
