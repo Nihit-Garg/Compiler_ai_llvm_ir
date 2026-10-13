@@ -28,12 +28,13 @@ def _initialize_llvm(llvm) -> None:
 
     llvmlite up to 0.40.x needs an explicit llvm.initialize() call.  Newer
     releases initialise the core themselves and make initialize() raise a
-    RuntimeError, so that error is the sign the call is not needed.
+    RuntimeError saying it is deprecated; only that error is ignored.
     """
     try:
         llvm.initialize()
-    except RuntimeError:
-        pass
+    except RuntimeError as e:
+        if "deprecated" not in str(e):
+            raise
     llvm.initialize_native_target()
     llvm.initialize_native_asmprinter()
 

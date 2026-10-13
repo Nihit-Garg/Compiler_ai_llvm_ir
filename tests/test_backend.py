@@ -74,6 +74,14 @@ class TestGenerateObjectCode:
         monkeypatch.setattr(llvm, "initialize", deprecated)
         assert len(generate_object_code(pipeline_ir("02_add.c"))) > 0
 
+    def test_other_initialize_errors_are_not_swallowed(self, monkeypatch):
+        """Only the deprecation error means "not needed"; anything else is real."""
+        def broken():
+            raise RuntimeError("LLVM core failed to start")
+        monkeypatch.setattr(llvm, "initialize", broken)
+        with pytest.raises(RuntimeError, match="LLVM core failed to start"):
+            generate_object_code(pipeline_ir("01_return.c"))
+
     def test_initialize_is_still_called_where_it_works(self, monkeypatch):
         """Older llvmlite (0.40.x) needs initialize(); it must not be skipped."""
         calls = []
