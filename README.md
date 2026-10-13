@@ -70,7 +70,7 @@ If the LLM's output doesn't match an existing interface in the codebase, don't c
 
 ## Toolchain & Environment
 
-- **Python**: 3.10, 3.11 or 3.12
+- **Python**: 3.10, 3.11, 3.12 or 3.13
 - **llvmlite**: 0.40.0 or later. The llvmlite wheel bundles its own copy of LLVM, so you do not need to install LLVM separately.
 
 Tested combinations:
@@ -83,8 +83,9 @@ Tested combinations:
 | 3.12 | 0.49.0 | local (Windows) |
 | 3.12 | 0.50.0 | local (Windows), fresh clone |
 | 3.12 | latest release | CI |
+| 3.13 | 0.50.0 | independent check by the project team |
 
-llvmlite 0.40.0 has no wheels for Python 3.12 or later. On 3.12, `pip install -r requirements.txt` installs a current llvmlite.
+llvmlite 0.40.0 has no wheels for Python 3.12 or later. On 3.12 and 3.13, `pip install -r requirements.txt` installs a current llvmlite.
 
 ## Getting Started
 

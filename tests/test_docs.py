@@ -81,7 +81,7 @@ def test_readme_python_range_matches_ci():
     readme = read("README.md")
     ci = read(".github/workflows/ci.yml")
     assert "3.10 or higher" not in readme
-    assert "**Python**: 3.10, 3.11 or 3.12" in readme
+    assert "**Python**: 3.10, 3.11, 3.12 or 3.13" in readme
     assert 'python-version: "3.10"' in ci and 'llvmlite: "llvmlite==0.40.0"' in ci
     assert 'python-version: "3.12"' in ci
 

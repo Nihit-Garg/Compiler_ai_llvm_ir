@@ -11,6 +11,6 @@ google-genai
 
 # Backend: LLVM IR → native object code, and the final LLVM check of the IR.
 # The wheel bundles its own LLVM; no system LLVM is needed.
-# Tested: llvmlite 0.40.0 (Python 3.10, 3.11), 0.49.0 (3.12), 0.50.0 (3.11, 3.12).
+# Tested: llvmlite 0.40.0 (Python 3.10, 3.11), 0.49.0 (3.12), 0.50.0 (3.11, 3.12, 3.13).
 # Backend tests are auto-skipped if this is not installed.
 llvmlite>=0.40.0
