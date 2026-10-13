@@ -24,10 +24,11 @@ GEMINI_API_KEY : str
     # ─────────────────────────────────────────────────────────
 
 ADVISOR_MODEL : str  (optional)
-    Gemini model name to use. Defaults to "gemini-1.5-flash" (free tier).
-    E.g. export ADVISOR_MODEL="gemini-1.5-pro"
+    Gemini model name to use. Defaults to "gemini-3.5-flash-lite"
+    (_DEFAULT_MODEL below).  E.g. export ADVISOR_MODEL="gemini-3.1-flash-lite"
 """
 
+import importlib
 import os
 import json
 import re
@@ -55,7 +56,7 @@ _VALID_PASSES = [
     "peephole",
 ]
 
-_DEFAULT_MODEL = "gemini-2.5-flash-lite"  # ~1s responses; free tier
+_DEFAULT_MODEL = "gemini-3.5-flash-lite"  # GA since 2026-07-21, no shutdown date announced
 
 
 # ---------------------------------------------------------------------------
@@ -180,7 +181,7 @@ def _call_gemini(prompt: str, api_key: str, model: str) -> Optional[str]:
 def _genai_installed() -> bool:
     """True if the google-genai SDK can be imported."""
     try:
-        from google import genai  # type: ignore  # noqa: F401
+        importlib.import_module("google.genai")
     except ImportError:
         return False
     return True

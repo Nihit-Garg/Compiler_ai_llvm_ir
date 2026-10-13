@@ -9,10 +9,9 @@ Interface defined in docs/SPEC.md §4:
 
 Requirements
 ------------
-* llvmlite 0.40.0  (pip install llvmlite)
-* LLVM 14 system libraries
-    Ubuntu:  sudo apt-get install llvm-14 llvm-14-dev
-    macOS:   brew install llvm@14
+* llvmlite >= 0.40.0  (pip install -r requirements.txt)
+  The llvmlite wheel bundles its own copy of LLVM; no system LLVM is needed.
+  Tested with llvmlite 0.40.0, 0.49.0 and 0.50.0.
 
 If llvmlite is not installed, the function raises a clear RuntimeError with
 installation instructions rather than an obscure ImportError.
@@ -23,12 +22,27 @@ import platform
 from typing import Optional
 
 
+def _initialize_llvm(llvm) -> None:
+    """
+    Initialise the LLVM core and the native target.
+
+    llvmlite up to 0.40.x needs an explicit llvm.initialize() call.  Newer
+    releases initialise the core themselves and make initialize() raise a
+    RuntimeError, so that error is the sign the call is not needed.
+    """
+    try:
+        llvm.initialize()
+    except RuntimeError:
+        pass
+    llvm.initialize_native_target()
+    llvm.initialize_native_asmprinter()
+
+
 def _get_native_triple() -> str:
     """Return the LLVM target triple for the current machine."""
     try:
         import llvmlite.binding as llvm  # type: ignore
-        llvm.initialize()
-        llvm.initialize_native_target()
+        _initialize_llvm(llvm)
         return llvm.get_default_triple()
     except ImportError:
         # Fallback — construct a best-effort triple without llvmlite
@@ -65,16 +79,11 @@ def generate_object_code(ir: str, target_triple: Optional[str] = None) -> bytes:
     except ImportError:
         raise RuntimeError(
             "llvmlite is required for object code generation but is not installed.\n"
-            "Install it with:  pip install llvmlite==0.40.0\n"
-            "You also need LLVM 14 system libraries:\n"
-            "  Ubuntu: sudo apt-get install llvm-14 llvm-14-dev\n"
-            "  macOS:  brew install llvm@14"
+            "Install it with:  pip install -r requirements.txt"
         )
 
     # ── Initialise LLVM targets ───────────────────────────────────────────────
-    llvm.initialize()
-    llvm.initialize_native_target()
-    llvm.initialize_native_asmprinter()
+    _initialize_llvm(llvm)
 
     # ── Parse and verify the IR ───────────────────────────────────────────────
     try:

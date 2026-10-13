@@ -184,6 +184,26 @@ def parse(tokens: List[Token]) -> ASTNode:
     pass
 ```
 
+### `frontend/semantic.py`
+```python
+from frontend.ast import ASTNode
+
+def analyze(ast: ASTNode) -> ASTNode:
+    """
+    Checks the AST and returns it (possibly annotated).
+    Raises frontend.errors.SemanticError if the program is invalid.
+    """
+    pass
+```
+
+Semantic rules:
+
+- All function signatures are registered before any body is checked, so a function may call one defined later in the file (and itself).
+- A name must be declared before use. Redeclaring a name in the same scope is an error. Parameters and the function body's top-level declarations share one scope, so `int f(int x) { int x = 1; ... }` is an error. An inner block opens a new scope and may hide an outer name.
+- A call must name a function and pass exactly as many arguments as it has parameters. A function name may not be used as a value, and a variable may not be called.
+- Assigning to a function name is an error.
+- A function with no `return` statement at all is an error.
+
 ### `ir/generator.py`
 ```python
 from frontend.ast import ASTNode
@@ -329,16 +349,24 @@ python main.py <source.c> [-o FILE] [-r FILE] [--compile] [--no-advisor] [--quie
 
 ### `backend/codegen.py`
 ```python
-def generate_object_code(ir: str, target_triple: str) -> bytes:
-    """Compiles the LLVM IR down to target machine object code."""
+from typing import Optional
+
+def generate_object_code(ir: str, target_triple: Optional[str] = None) -> bytes:
+    """
+    Compiles the LLVM IR down to target machine object code.
+    target_triple defaults to the host's triple.  Raises RuntimeError if
+    llvmlite is missing, LLVM rejects the IR, or emission fails.
+    """
     pass
 ```
+
+Works with llvmlite 0.40.0 and later. Older llvmlite needs `llvm.initialize()`; newer releases initialise LLVM themselves and make that call raise. The backend handles both.
 
 ## 5. Environment Variables
 
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
-| `GEMINI_API_KEY` | No | — | Gemini API key. Get free at https://aistudio.google.com/apikey. If unset, the advisor silently returns the default pass order. |
-| `ADVISOR_MODEL` | No | `gemini-1.5-flash` | Gemini model name to use. |
+| `GEMINI_API_KEY` | No | — | Gemini API key. Get free at https://aistudio.google.com/apikey. If unset, the advisor returns the default pass order and reports `advisor_source = "no_api_key"`. |
+| `ADVISOR_MODEL` | No | `gemini-3.5-flash-lite` | Gemini model name to use. The default is `_DEFAULT_MODEL` in `advisor/heuristics.py`. |
 
 The system is designed to work **without** a live API key — the advisor falls back to the fixed default pass order, the verifier still runs, and all tests pass. The API key is only required to actually exercise the LLM-guided path.

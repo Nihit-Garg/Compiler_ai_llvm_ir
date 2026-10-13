@@ -16,11 +16,7 @@ from frontend.lexer import lex
 from frontend.parser import parse
 from frontend.semantic import analyze
 from ir.generator import generate_ir
-from frontend.ast import (
-    Program, FunctionDef, Param, Block,
-    VarDecl, Assignment, IfStmt, WhileStmt, ReturnStmt, ExprStmt,
-    BinaryOp, NumberLiteral, Identifier, FunctionCall,
-)
+from frontend.ast import NumberLiteral
 
 SAMPLES_DIR = os.path.join(os.path.dirname(__file__), "samples")
 

@@ -36,7 +36,7 @@ Design notes
 
 from typing import List, Optional
 from frontend.ast import (
-    ASTNode, Program, FunctionDef, Param, Block,
+    ASTNode, Program, FunctionDef, Block,
     VarDecl, Assignment, IfStmt, WhileStmt, ReturnStmt, ExprStmt,
     BinaryOp, NumberLiteral, Identifier, FunctionCall,
 )

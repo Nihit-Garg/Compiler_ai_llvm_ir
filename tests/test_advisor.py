@@ -8,8 +8,6 @@ Tests cover:
 - End-to-end with a mocked Gemini response
 """
 
-import os
-import pytest
 from unittest.mock import patch, MagicMock
 
 from advisor.heuristics import (

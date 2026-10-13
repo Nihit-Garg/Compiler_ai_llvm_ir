@@ -17,7 +17,7 @@ Options
 -------
     --output, -o <file>   Write optimized IR to this path (default: build/<name>.ll)
     --report, -r <file>   Write JSON report to this path   (default: build/<name>_report.json)
-    --compile, -c         Also compile IR → object code    (requires llvmlite + LLVM 14)
+    --compile, -c         Also compile IR → object code    (requires llvmlite)
     --no-advisor          Do not ask the LLM; use the default pass order (still verified).
                           --no-opt is an older alias: it does NOT turn optimization off.
     --quiet, -q           Suppress banner and step output; print IR to stdout only
@@ -39,7 +39,7 @@ Environment Variables
 ---------------------
     GEMINI_API_KEY   Free Gemini key — https://aistudio.google.com/apikey
                      If unset, the advisor falls back to the fixed default pass order.
-    ADVISOR_MODEL    Gemini model name (default: gemini-1.5-flash)
+    ADVISOR_MODEL    Gemini model name (default: gemini-3.5-flash-lite)
 
 Example
 -------
@@ -49,7 +49,6 @@ Example
 """
 
 import sys
-import os
 import json
 import time
 import argparse
@@ -320,7 +319,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--output", "-o",    help="Write optimized IR here (default: build/<name>.ll)")
     p.add_argument("--report", "-r",    help="Write JSON report here (default: build/<name>_report.json)")
     p.add_argument("--compile", "-c",   action="store_true",
-                   help="Also compile IR → object code (requires llvmlite + LLVM 14)")
+                   help="Also compile IR → object code (requires llvmlite)")
     p.add_argument("--no-advisor", "--no-opt", dest="no_advisor", action="store_true",
                    help="Do not ask the LLM advisor; apply the default pass order "
                         "(still verified). --no-opt is an alias kept for old "
@@ -330,7 +329,21 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _make_output_encoding_safe() -> None:
+    """
+    Keep printing from crashing on streams that cannot encode the banner's
+    box-drawing characters and ✓ / ⚠ / ✗ (for example output piped or
+    redirected on Windows, which uses cp1252).  Such characters are replaced
+    with "?"; the stream's encoding is left alone, and the IR itself is ASCII.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(errors="replace")
+
+
 def main() -> int:
+    _make_output_encoding_safe()
     args = _build_parser().parse_args()
 
     src   = Path(args.source)

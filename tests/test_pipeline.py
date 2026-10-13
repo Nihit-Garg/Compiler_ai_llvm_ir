@@ -10,11 +10,10 @@ Tests cover:
 """
 
 import os
-import pytest
 from unittest.mock import patch
 
 from verifier.pipeline import apply_optimizations
-from advisor.heuristics import _default_passes, _VALID_PASSES
+from advisor.heuristics import _default_passes
 
 
 SAMPLES_DIR = os.path.join(os.path.dirname(__file__), "samples")

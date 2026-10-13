@@ -4,7 +4,7 @@
 
 This is a compiler for a constrained C-like language that generates LLVM IR and applies standard optimization passes — but instead of running those passes in one fixed, hardcoded order (like `-O2`/`-O3` always does), an LLM is asked to suggest which passes to apply and in what sequence for each specific program.
 
-The key idea: **we never trust the LLM's suggestion blindly.** Every suggested optimization is verified for correctness before being accepted. If verification fails, the compiler silently falls back to a safe, fixed default pass order. This means the AI layer can only make the compiler *better*, never *incorrect* — the compiler's core guarantee (correct output) is never put at risk by the AI component.
+The key idea: **we never trust the LLM's suggestion blindly.** Every suggested optimization is verified for correctness before being accepted. If verification fails, the compiler falls back to a fixed default pass order, and that order is verified the same way. If it fails too, the IR is left unoptimized. This means the AI layer can only make the compiler *better*, never *incorrect* — the compiler's core guarantee (correct output) is never put at risk by the AI component.
 
 In short: classic compiler + an adaptive optimization advisor + a safety net that keeps it honest.
 
@@ -23,11 +23,14 @@ Source (.c subset)
    → Apply suggested passes → Optimized IR
    → Verifier: differential test optimized IR vs. original IR
         → if behaviorally equivalent → ACCEPT
-        → if not → REJECT → apply default fixed pass order instead
-   → Code Generation → Final Output + Log Report
+        → if not → REJECT → apply default fixed pass order, verify it too
+             → if verified → use it
+             → if not → keep the unoptimized IR
+   → Final IR check (structural + LLVM's own verifier)
+   → Code Generation (optional) → Final Output + Log Report
 ```
 
-The log report records what was suggested, what was accepted/rejected, and the resulting performance difference — this becomes our evaluation data.
+The JSON report records where the suggestion came from (`advisor_source`: the LLM, or a fallback such as `no_api_key`), what was accepted or rejected, which passes were applied, and the instruction count before and after optimization (`instructions_before`, `instructions_after`). This becomes our evaluation data.
 
 ## Project Structure
 
@@ -37,7 +40,7 @@ The log report records what was suggested, what was accepted/rejected, and the r
 - `/advisor` — LLM integration: sends IR + pass list, parses suggested sequence
 - `/verifier` — differential testing harness, fallback logic
 - `/backend` — final code generation
-- `/tests` — sample programs + expected AST/IR output (ground truth)
+- `/tests` — unit and end-to-end tests; `tests/samples/` holds sample programs and their expected LLVM IR (`.ll`) as ground truth
 - `/docs` — SPEC.md and design docs
 
 ## The Source of Truth: `docs/SPEC.md`
@@ -67,33 +70,47 @@ If the LLM's output doesn't match an existing interface in the codebase, don't c
 
 ## Toolchain & Environment
 
-To ensure compatibility, please use the following pinned toolchain versions:
-- **Python**: `3.10` or higher
-- **LLVM**: `14.0.x` (or `14.x` series)
-- **llvmlite**: `0.40.0` (must match the LLVM 14 version)
+- **Python**: 3.10, 3.11 or 3.12
+- **llvmlite**: 0.40.0 or later. The llvmlite wheel bundles its own copy of LLVM, so you do not need to install LLVM separately.
+
+Tested combinations:
+
+| Python | llvmlite | Where |
+|---|---|---|
+| 3.10 | 0.40.0 | CI |
+| 3.11 | 0.40.0 | local (Windows) |
+| 3.11 | 0.50.0 | local (Windows), fresh clone |
+| 3.12 | 0.49.0 | local (Windows) |
+| 3.12 | 0.50.0 | local (Windows), fresh clone |
+| 3.12 | latest release | CI |
+
+llvmlite 0.40.0 has no wheels for Python 3.12 or later. On 3.12, `pip install -r requirements.txt` installs a current llvmlite.
 
 ## Getting Started
 
-1. Ensure LLVM 14 is installed on your system.
-2. Clone the repository and set up the environment:
+1. Clone the repository and create a virtual environment:
    ```bash
    git clone <repo-url>
    cd <repo>
    python -m venv venv
-   source venv/bin/activate
+   source venv/bin/activate        # Windows: venv\Scripts\activate
    ```
-3. Install dependencies:
+2. Install dependencies:
    ```bash
-   pip install llvmlite pytest
-   # OR if requirements.txt exists:
-   # pip install -r requirements.txt
+   pip install -r requirements.txt
    ```
-4. Run tests to verify the setup:
+3. Run the tests:
    ```bash
    pytest tests/
    ```
+4. Compile a program:
+   ```bash
+   python main.py tests/samples/02_add.c
+   ```
+   Output goes to a `build/` folder in the **current folder**: `build/02_add.ll` (the optimized IR) and `build/02_add_report.json` (the report). Add `--compile` to also write `build/02_add.o`. Use `-o` and `-r` to choose other paths. Two sources with the same file name (say `a/test.c` and `b/test.c`) write to the same `build/test.ll`, so the second run overwrites the first unless you give `-o`.
+
+   Other options: `--no-advisor` skips the LLM and applies the default pass order, which is still verified. `--no-opt` is an old alias for it, and despite the name it does not turn optimization off. `--quiet` prints only the IR. Exit status is 0 on success and 1 on any error, including a failed final IR check or a failed `--compile`.
+
+5. Optional: to use the LLM advisor, copy `.env.example` to `.env` and set `GEMINI_API_KEY`. Without a key, the default pass order is used, and the report says so (`advisor_source: "no_api_key"`).
 
 See `docs/SPEC.md` for the language grammar and detailed module contracts before contributing.
-
-
-merged ishita-dev (erros to be resolved)

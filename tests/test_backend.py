@@ -1,15 +1,15 @@
 """
 Tests for backend/codegen.py.
 
-llvmlite requires LLVM 14 system libraries. Tests are automatically skipped
-if llvmlite is not installed, so CI without LLVM still passes cleanly.
+The llvmlite wheel bundles LLVM, so no system LLVM is needed. Tests are
+skipped automatically if llvmlite is not installed.
 """
 
 import pytest
 
 llvm = pytest.importorskip(
     "llvmlite.binding",
-    reason="llvmlite not installed — skipping backend tests (need LLVM 14)"
+    reason="llvmlite not installed — skipping backend tests"
 )
 
 from backend.codegen import generate_object_code
@@ -62,6 +62,24 @@ class TestGenerateObjectCode:
         opt_ir = optimize(ir)
         obj = generate_object_code(opt_ir)
         assert len(obj) > 0
+
+    def test_works_when_initialize_is_deprecated(self, monkeypatch):
+        """
+        Newer llvmlite initialises LLVM itself and makes initialize() raise
+        RuntimeError.  The backend must still compile on such a version.
+        """
+        def deprecated():
+            raise RuntimeError("llvmlite.binding.initialize() is deprecated "
+                               "and will be removed.")
+        monkeypatch.setattr(llvm, "initialize", deprecated)
+        assert len(generate_object_code(pipeline_ir("02_add.c"))) > 0
+
+    def test_initialize_is_still_called_where_it_works(self, monkeypatch):
+        """Older llvmlite (0.40.x) needs initialize(); it must not be skipped."""
+        calls = []
+        monkeypatch.setattr(llvm, "initialize", lambda: calls.append(1))
+        generate_object_code(pipeline_ir("01_return.c"))
+        assert calls == [1]
 
     def test_any_pass_order_gives_ir_that_llvm_accepts(self):
         """

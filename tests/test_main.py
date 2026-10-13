@@ -217,3 +217,40 @@ class TestNoAdvisorFlag:
         text = main._build_parser().format_help()
         assert "--no-advisor" in text
         assert "does not disable optimization" in " ".join(text.split())
+
+
+
+# ---------------------------------------------------------------------------
+# Output that cannot encode the banner (Windows pipes and redirects)
+# ---------------------------------------------------------------------------
+
+def run_cli_cp1252(cwd: Path, *args: str):
+    """Run main.py in a subprocess whose stdout/stderr are cp1252 pipes."""
+    import os
+    import subprocess
+    env = dict(os.environ, PYTHONIOENCODING="cp1252")
+    env.pop("PYTHONUTF8", None)
+    env.pop("GEMINI_API_KEY", None)
+    script = Path(main.__file__).resolve()
+    return subprocess.run(
+        [sys.executable, "-X", "utf8=0", str(script), *args],
+        cwd=cwd, env=env, capture_output=True, timeout=120,
+    )
+
+
+class TestNarrowOutputEncoding:
+    """cp1252 has no box-drawing characters; printing them used to crash main.py."""
+
+    def test_piped_output_does_not_crash(self, tmp_path):
+        result = run_cli_cp1252(tmp_path, str(SAMPLE))
+        stderr = result.stderr.decode("cp1252", "replace")
+        assert result.returncode == 0, stderr
+        assert "Traceback" not in stderr
+        assert "MiniC Compiler" in result.stdout.decode("cp1252")
+
+    def test_error_message_on_stderr_does_not_crash(self, tmp_path):
+        result = run_cli_cp1252(tmp_path, str(tmp_path / "missing.c"))
+        stderr = result.stderr.decode("cp1252", "replace")
+        assert result.returncode == 1
+        assert "Traceback" not in stderr
+        assert "File not found" in stderr
