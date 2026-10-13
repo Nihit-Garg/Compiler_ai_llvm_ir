@@ -91,3 +91,13 @@ def test_readme_documents_build_folder():
     assert "build/" in readme
     assert "overwrites the first unless you give `-o`" in readme
     assert main.DEFAULT_BUILD_DIR == "build"
+
+
+# ---------------------------------------------------------------------------
+# .env.example is a template: it must never carry a real key
+# ---------------------------------------------------------------------------
+
+def test_env_example_has_only_a_placeholder_key():
+    keys = [l.strip() for l in read(".env.example").splitlines()
+            if l.strip().startswith("GEMINI_API_KEY")]
+    assert keys == ["GEMINI_API_KEY=your-gemini-api-key-here"]
