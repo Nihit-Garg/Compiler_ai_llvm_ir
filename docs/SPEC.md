@@ -218,7 +218,7 @@ def peephole(ir: str) -> str:
 
 ### `advisor/heuristics.py`
 ```python
-from typing import List
+from typing import Any, Dict, List, Tuple
 
 def get_optimization_advice(ir: str) -> List[str]:
     """
@@ -227,11 +227,25 @@ def get_optimization_advice(ir: str) -> List[str]:
     Pass names match the function names in optimizer/passes.py exactly.
     """
     pass
+
+def get_advice_with_source(ir: str) -> Tuple[List[str], Dict[str, Any]]:   # NEW
+    """
+    Same pass list as get_optimization_advice(), plus where it came from:
+    {"source": str, "model": str | None}.
+    """
+    pass
 ```
+
+Advisor rules:
+
+- An explicit empty answer (`[]`) from the LLM is honoured: the result is `[]`, meaning "do not optimize". It is not treated as a failure.
+- Any other unusable answer falls back to the default order: no JSON array, malformed JSON, or a non-empty array without a single valid pass name. Unknown names in an otherwise valid array are dropped.
+- `source` is one of: `"llm"` (the LLM's own answer, including `[]`), `"no_api_key"`, `"sdk_unavailable"` (google-genai not installed), `"api_error"`, `"unusable_response"`. The pipeline adds `"skipped"` when the advisor is not consulted.
+- `model` is the model name sent to the API, or `None` if no call was attempted.
 
 ### `verifier/check.py`
 ```python
-from typing import Optional
+from typing import Optional, Tuple
 
 def verify_ir(ir: str) -> bool:
     """Structural well-formedness check. True if IR has valid shape."""
@@ -248,6 +262,18 @@ def verify_equivalence(original_ir: str, optimized_ir: str) -> bool:
 
 def equivalence_failure_reason(original_ir: str, optimized_ir: str) -> Optional[str]:
     """One-line reason why verify_equivalence() is False, or None if it is True."""
+    pass
+
+def count_instructions(ir: str) -> int:                       # NEW
+    """Instructions in all functions; labels, comments and blank lines not counted."""
+    pass
+
+def llvm_check(ir: str) -> Tuple[str, Optional[str]]:         # NEW
+    """
+    Parse and verify the IR with LLVM via llvmlite.
+    ("passed", None), ("failed", one-line LLVM error), or
+    ("unavailable", None) if llvmlite cannot be imported.
+    """
     pass
 ```
 
@@ -271,18 +297,35 @@ def apply_optimizations(ir: str, use_advisor: bool = True) -> Tuple[str, Dict[st
     Returns (final_ir, report_dict).
     report_dict keys: suggested_passes, decision, rejection_reason,
                       fallback_passes, fallback_decision,
-                      fallback_rejection_reason, final_passes.
+                      fallback_rejection_reason, final_passes,
+                      advisor_source, advisor_model,
+                      instructions_before, instructions_after.
     """
     pass
 ```
 
 Pipeline rules:
 
+- An empty suggestion (`[]`, the LLM's "no optimization") returns the input IR unchanged with `decision = "accepted"` and `final_passes = []`. Nothing was optimized, so there is nothing to verify and no fallback.
 - The suggested pass order is verified against the original IR. If verified, it is used (`decision = "accepted"`).
 - Otherwise (`decision = "rejected"`) the default pass order is applied **and verified the same way** (`fallback_decision`).
 - If the default order is not verified either, the original IR is returned unchanged and `final_passes` is `[]`.
-- `use_advisor=False` skips the LLM and uses the default order as the suggestion; verification still applies.
+- `use_advisor=False` skips the LLM and uses the default order as the suggestion; verification still applies. `advisor_source` is then `"skipped"`.
 - No path may emit optimized IR that the verifier has not passed.
+- `advisor_source` / `advisor_model` come from `get_advice_with_source()`. They show whether `suggested_passes` is a real LLM answer or the default order used as a fallback.
+- `instructions_before` / `instructions_after` are `count_instructions()` of the input IR and of the returned IR.
+
+### `main.py` (command line)
+
+```
+python main.py <source.c> [-o FILE] [-r FILE] [--compile] [--no-advisor] [--quiet]
+```
+
+- The IR and the JSON report go to `build/<name>.ll` and `build/<name>_report.json`, with `build/` in the current working directory. They never go next to the source unless `-o` / `-r` say so. `--compile` writes `<ir path minus .ll>.o`.
+- `--no-advisor` calls `apply_optimizations(ir, use_advisor=False)`. `--no-opt` is an alias kept for old scripts; despite its name, the default passes still run.
+- Before reporting success, the final IR is checked with `verify_ir()`, and with `llvm_check()` when llvmlite is installed. The result goes in the report as `final_ir_check = {verify_ir, llvm, llvm_error, passed}`. A failed check still writes the IR so it can be inspected, skips `--compile`, and makes the exit status non-zero.
+- Exit status: `0` on success. `1` for any error: unreadable source, a parse, semantic or IR-generation error, a failed final IR check, or a `--compile` that produced no object file.
+- Besides the pipeline's keys, the report holds `source_file`, `ir_output`, `exit_code` and `elapsed_s`. It also holds `final_ir_check` (see above), `mode` (with `--no-advisor` only) and, with `--compile`, `object_output` and `compile_error`.
 
 ### `backend/codegen.py`
 ```python

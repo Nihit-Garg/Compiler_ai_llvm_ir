@@ -11,6 +11,7 @@ Public interface:
     apply_optimizations(ir: str, use_advisor: bool = True) -> tuple[str, dict]
         1. Ask the LLM advisor for a suggested pass sequence
            (or take the default order when use_advisor=False).
+           An explicit empty suggestion returns the input IR unchanged.
         2. Apply the suggested passes to produce candidate IR.
         3. Run the differential verifier (original vs candidate).
         4a. If verified → accept, return candidate IR.
@@ -27,14 +28,18 @@ any other and is checked the same way.
 
 from typing import Dict, Any, List, Optional, Tuple
 
-from advisor.heuristics import get_optimization_advice, _default_passes, _VALID_PASSES
+from advisor.heuristics import get_advice_with_source, _default_passes, SOURCE_SKIPPED
 from optimizer.passes import (
     constant_folding,
     dead_code_elimination,
     common_subexpression_elimination,
     peephole,
 )
-from verifier.check import verify_equivalence, equivalence_failure_reason
+from verifier.check import (
+    verify_equivalence,
+    equivalence_failure_reason,
+    count_instructions,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -126,6 +131,13 @@ def apply_optimizations(ir: str, use_advisor: bool = True) -> Tuple[str, Dict[st
                 "fallback_rejection_reason" : str | None
                 "final_passes"     : List[str]    — passes actually applied
                                                     ([] = IR left unoptimized)
+                "advisor_source"   : str          — where suggested_passes came
+                                                    from: "llm", "no_api_key",
+                                                    "sdk_unavailable", "api_error",
+                                                    "unusable_response", "skipped"
+                "advisor_model"    : str | None   — model asked, if any
+                "instructions_before" : int       — instruction count of ir
+                "instructions_after"  : int       — instruction count of final_ir
     """
     report: Dict[str, Any] = {
         "suggested_passes": [],
@@ -135,11 +147,31 @@ def apply_optimizations(ir: str, use_advisor: bool = True) -> Tuple[str, Dict[st
         "fallback_decision": None,
         "fallback_rejection_reason": None,
         "final_passes": [],
+        "advisor_source": None,
+        "advisor_model": None,
+        "instructions_before": count_instructions(ir),
+        "instructions_after": None,
     }
 
+    def finish(final_ir: str) -> Tuple[str, Dict[str, Any]]:
+        report["instructions_after"] = count_instructions(final_ir)
+        return final_ir, report
+
     # ── Step 1: Ask the advisor ───────────────────────────────────────────────
-    suggested = get_optimization_advice(ir) if use_advisor else _default_passes()
+    if use_advisor:
+        suggested, advice = get_advice_with_source(ir)
+        report["advisor_source"] = advice["source"]
+        report["advisor_model"] = advice["model"]
+    else:
+        suggested = _default_passes()
+        report["advisor_source"] = SOURCE_SKIPPED
     report["suggested_passes"] = suggested
+
+    # An explicit empty suggestion means "do not optimize": the input goes out
+    # unchanged, so there is nothing to verify and nothing to fall back from.
+    if not suggested:
+        report["decision"] = "accepted"
+        return finish(ir)
 
     # ── Steps 2–3: Apply suggested passes and verify ─────────────────────────
     candidate_ir, rejection_reason = _try_passes(ir, suggested)
@@ -148,7 +180,7 @@ def apply_optimizations(ir: str, use_advisor: bool = True) -> Tuple[str, Dict[st
     if candidate_ir is not None:
         report["decision"] = "accepted"
         report["final_passes"] = suggested
-        return candidate_ir, report
+        return finish(candidate_ir)
 
     # ── Step 4b: Reject → verified fallback ──────────────────────────────────
     report["decision"] = "rejected"
@@ -161,10 +193,10 @@ def apply_optimizations(ir: str, use_advisor: bool = True) -> Tuple[str, Dict[st
     if fallback_ir is not None:
         report["fallback_decision"] = "accepted"
         report["final_passes"] = fallback
-        return fallback_ir, report
+        return finish(fallback_ir)
 
     # Neither sequence could be verified — ship the original IR untouched.
     report["fallback_decision"] = "rejected"
     report["fallback_rejection_reason"] = fallback_reason
     report["final_passes"] = []
-    return ir, report
+    return finish(ir)

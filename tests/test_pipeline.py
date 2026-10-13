@@ -279,9 +279,13 @@ class TestWithoutAdvisor:
     """use_advisor=False (the CLI's --no-opt) skips the LLM, not the verifier."""
 
     def test_advisor_is_not_consulted(self, monkeypatch):
+        # The pipeline now asks the advisor through get_advice_with_source();
+        # patching that (and the API call under it) keeps this test meaningful.
         monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
-        with patch("verifier.pipeline.get_optimization_advice",
-                   side_effect=AssertionError("advisor must not be called")):
+        with patch("verifier.pipeline.get_advice_with_source",
+                   side_effect=AssertionError("advisor must not be called")), \
+             patch("advisor.heuristics._call_gemini",
+                   side_effect=AssertionError("LLM must not be called")):
             ir = pipeline_ir("05_func_call.c")
             final_ir, report = apply_optimizations(ir, use_advisor=False)
         assert report["suggested_passes"] == _default_passes()
@@ -296,3 +300,93 @@ class TestWithoutAdvisor:
         assert final_ir == ir
         assert report["decision"] == "rejected"
         assert report["final_passes"] == []
+
+
+# ---------------------------------------------------------------------------
+# Explicit empty suggestion: no passes, original IR
+# ---------------------------------------------------------------------------
+
+class TestEmptySuggestion:
+    def test_empty_answer_applies_no_passes(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+        with patch("advisor.heuristics._call_gemini", return_value="[]"):
+            ir = compile_src("int main() { return 2 + 3; }")
+            final_ir, report = apply_optimizations(ir)
+        assert final_ir == ir
+        assert report["suggested_passes"] == []
+        assert report["decision"] == "accepted"
+        assert report["final_passes"] == []
+        assert report["fallback_passes"] is None
+        assert report["advisor_source"] == "llm"
+
+    def test_unverifiable_program_is_not_sent_to_the_fallback(self, monkeypatch):
+        """[] needs no verification, so an inconclusive program is not 'rejected'."""
+        monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+        with patch("advisor.heuristics._call_gemini", return_value="[]"), \
+             patch("verifier.pipeline.verify_equivalence",
+                   side_effect=AssertionError("nothing to verify")):
+            ir = compile_src(
+                "int spin() { int i = 0; while (i == 0) { i = 0 * 5; } return i; }"
+            )
+            final_ir, report = apply_optimizations(ir)
+        assert final_ir == ir
+        assert report["decision"] == "accepted"
+        assert report["fallback_decision"] is None
+
+
+# ---------------------------------------------------------------------------
+# Advisor source and instruction counts in the report
+# ---------------------------------------------------------------------------
+
+class TestAdvisorSourceInReport:
+    def test_no_api_key(self, monkeypatch):
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        _, report = apply_optimizations(pipeline_ir("02_add.c"))
+        assert report["advisor_source"] == "no_api_key"
+        assert report["advisor_model"] is None
+
+    def test_llm(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+        monkeypatch.setenv("ADVISOR_MODEL", "test-model")
+        with patch("advisor.heuristics._call_gemini", return_value='["peephole"]'):
+            _, report = apply_optimizations(pipeline_ir("02_add.c"))
+        assert report["advisor_source"] == "llm"
+        assert report["advisor_model"] == "test-model"
+
+    def test_api_error(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+        with patch("advisor.heuristics._call_gemini", return_value=None), \
+             patch("advisor.heuristics._genai_installed", return_value=True):
+            _, report = apply_optimizations(pipeline_ir("02_add.c"))
+        assert report["advisor_source"] == "api_error"
+        assert report["suggested_passes"] == _default_passes()
+
+    def test_unusable_response(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+        with patch("advisor.heuristics._call_gemini", return_value="no idea"):
+            _, report = apply_optimizations(pipeline_ir("02_add.c"))
+        assert report["advisor_source"] == "unusable_response"
+
+    def test_skipped(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+        _, report = apply_optimizations(pipeline_ir("02_add.c"), use_advisor=False)
+        assert report["advisor_source"] == "skipped"
+        assert report["advisor_model"] is None
+
+
+class TestInstructionCounts:
+    def test_counts_show_the_improvement(self, monkeypatch):
+        from verifier.check import count_instructions
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        ir = compile_src("int main() { int x = 2 + 3; return x * 1; }")
+        final_ir, report = apply_optimizations(ir)
+        assert report["instructions_before"] == count_instructions(ir)
+        assert report["instructions_after"] == count_instructions(final_ir)
+        assert report["instructions_after"] < report["instructions_before"]
+
+    def test_counts_equal_when_ir_is_left_unchanged(self, monkeypatch):
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        with patch("verifier.pipeline.verify_equivalence", return_value=False):
+            _, report = apply_optimizations(pipeline_ir("05_func_call.c"))
+        assert report["final_passes"] == []
+        assert report["instructions_after"] == report["instructions_before"]

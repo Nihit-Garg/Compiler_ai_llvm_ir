@@ -1,7 +1,8 @@
 """
 Verifier for the MiniC compiler.
 
-Two public functions:
+Main public functions (see also equivalence_failure_reason, count_instructions
+and llvm_check):
 
   verify_ir(ir: str) -> bool
       Structural well-formedness check.  Returns True if the IR has the
@@ -545,6 +546,45 @@ def verify_ir(ir: str) -> bool:
             return False
 
     return True
+
+
+def count_instructions(ir: str) -> int:
+    """
+    Number of instructions in all functions of the IR (labels, blank lines,
+    comments and braces are not counted).  Used for the report's
+    instructions_before / instructions_after.
+    """
+    module = _parse_ir(ir)
+    return sum(len(instrs)
+               for fn in module.functions.values()
+               for instrs in fn.blocks.values())
+
+
+LLVM_PASSED      = "passed"
+LLVM_FAILED      = "failed"
+LLVM_UNAVAILABLE = "unavailable"
+
+
+def llvm_check(ir: str) -> Tuple[str, Optional[str]]:
+    """
+    Parse and verify the IR with real LLVM through llvmlite.
+
+    Returns (status, error):
+        ("passed", None)        LLVM parsed and verified the module
+        ("failed", message)     LLVM rejected it; message is LLVM's error
+        ("unavailable", None)   llvmlite cannot be imported; nothing was checked
+    """
+    try:
+        import llvmlite.binding as llvm  # type: ignore
+    except ImportError:
+        return LLVM_UNAVAILABLE, None
+
+    try:
+        module = llvm.parse_assembly(ir)
+        module.verify()
+    except Exception as e:
+        return LLVM_FAILED, " ".join(str(e).split())
+    return LLVM_PASSED, None
 
 
 def verify_equivalence(original_ir: str, optimized_ir: str) -> bool:

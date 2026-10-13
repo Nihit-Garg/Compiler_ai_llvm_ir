@@ -339,3 +339,56 @@ class TestInputCoverage:
             seen = {args[position] for args in inputs}
             assert seen == set(check._TEST_VALUES), (
                 f"parameter {position} of {n_params} only saw {sorted(seen)}")
+
+
+# ---------------------------------------------------------------------------
+# count_instructions and llvm_check
+# ---------------------------------------------------------------------------
+
+from verifier.check import count_instructions, llvm_check
+
+
+class TestCountInstructions:
+    def test_counts_instructions_not_labels_or_comments(self):
+        ir = ("; comment\n"
+              "define i32 @f(i32 %a) {\n"
+              "entry:\n"
+              "  %x = add i32 %a, 1   ; inline comment\n"
+              "  br label %next\n"
+              "\n"
+              "next:\n"
+              "  ret i32 %x\n"
+              "}\n")
+        assert count_instructions(ir) == 3
+
+    def test_counts_across_functions(self):
+        ir = ("define i32 @f() {\nentry:\n  ret i32 1\n}\n\n"
+              "define i32 @g() {\nentry:\n  %y = add i32 1, 2\n  ret i32 %y\n}\n")
+        assert count_instructions(ir) == 3
+
+    def test_empty_ir_has_no_instructions(self):
+        assert count_instructions("") == 0
+
+
+class TestLLVMCheck:
+    def test_unavailable_without_llvmlite(self, monkeypatch):
+        import builtins
+        real_import = builtins.__import__
+
+        def no_llvmlite(name, *args, **kwargs):
+            if name.startswith("llvmlite"):
+                raise ImportError("no llvmlite here")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", no_llvmlite)
+        assert llvm_check("define i32 @f() {\nentry:\n  ret i32 0\n}\n") == ("unavailable", None)
+
+    def test_valid_ir_passes(self):
+        pytest.importorskip("llvmlite.binding")
+        assert llvm_check("define i32 @f() {\nentry:\n  ret i32 0\n}\n") == ("passed", None)
+
+    def test_invalid_ir_fails_with_llvm_message(self):
+        pytest.importorskip("llvmlite.binding")
+        status, error = llvm_check("define i32 @f() {\nentry:\n  ret i32 %x\n}\n")
+        assert status == "failed"
+        assert "%x" in error and "\n" not in error

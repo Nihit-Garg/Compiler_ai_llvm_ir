@@ -6,6 +6,7 @@ for a given LLVM IR program.
 
 Interface defined in docs/SPEC.md §4:
     get_optimization_advice(ir: str) -> List[str]
+    get_advice_with_source(ir: str) -> Tuple[List[str], Dict[str, Any]]
 
 Environment variables
 ---------------------
@@ -30,7 +31,7 @@ ADVISOR_MODEL : str  (optional)
 import os
 import json
 import re
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 # ── Load .env file automatically (local development) ─────────────────────────
 # python-dotenv reads .env in the project root and injects variables into
@@ -98,19 +99,34 @@ def _parse_response(response_text: str) -> List[str]:
     1. Try to find a JSON array in the response.
     2. Filter the parsed list to only include known-valid pass names.
     3. Deduplicate while preserving order.
-    Returns an empty list on any parse failure (caller falls back to default).
+    Returns an empty list on any parse failure, so it cannot tell an explicit
+    "[]" from garbage; use _parse_response_strict() for that.
+    """
+    return _parse_response_strict(response_text) or []
+
+
+def _parse_response_strict(response_text: str) -> Optional[List[str]]:
+    """
+    Like _parse_response(), but separates the two meanings of an empty result:
+
+    - []    the LLM answered with an explicit empty array ("no optimization")
+    - None  the answer is unusable: no JSON array, malformed JSON, or a
+            non-empty array without a single valid pass name
     """
     # Attempt to extract a JSON array from the text
     match = re.search(r'\[.*?\]', response_text, re.DOTALL)
     if not match:
-        return []
+        return None
 
     try:
         parsed = json.loads(match.group())
     except (json.JSONDecodeError, ValueError):
-        return []
+        return None
 
     if not isinstance(parsed, list):
+        return None
+
+    if not parsed:
         return []
 
     # Keep only valid, non-duplicate pass names (in the order the LLM gave them)
@@ -121,7 +137,7 @@ def _parse_response(response_text: str) -> List[str]:
             seen.add(item)
             result.append(item)
 
-    return result
+    return result or None
 
 
 # ---------------------------------------------------------------------------
@@ -161,9 +177,67 @@ def _call_gemini(prompt: str, api_key: str, model: str) -> Optional[str]:
         return None
 
 
+def _genai_installed() -> bool:
+    """True if the google-genai SDK can be imported."""
+    try:
+        from google import genai  # type: ignore  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Public interface (SPEC.md §4)
 # ---------------------------------------------------------------------------
+
+# Values of the "source" field returned by get_advice_with_source().
+SOURCE_LLM               = "llm"                # the LLM's own answer is used
+SOURCE_NO_API_KEY        = "no_api_key"         # GEMINI_API_KEY unset or blank
+SOURCE_SDK_UNAVAILABLE   = "sdk_unavailable"    # google-genai not installed
+SOURCE_API_ERROR         = "api_error"          # the API call failed
+SOURCE_UNUSABLE_RESPONSE = "unusable_response"  # no valid pass list in the answer
+SOURCE_SKIPPED           = "skipped"            # advisor not consulted (set by the pipeline)
+
+
+def get_advice_with_source(ir: str) -> Tuple[List[str], Dict[str, Any]]:
+    """
+    Same advice as get_optimization_advice(), plus a record of where it came
+    from, so a report can tell a real LLM answer from the default fallback.
+
+    Returns (passes, info) where info has:
+        "source" : str        — one of the SOURCE_* values above
+        "model"  : str | None — model name, if an API call was attempted
+
+    An explicit empty answer ("[]") from the LLM is honoured: passes is []
+    and source is "llm".  Every other failure returns the default order.
+    """
+    # ── Check for API key ────────────────────────────────────────────────────
+    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+
+    if not api_key:
+        # No key → silent fallback (offline / CI mode)
+        return _default_passes(), {"source": SOURCE_NO_API_KEY, "model": None}
+
+    model = os.environ.get("ADVISOR_MODEL", _DEFAULT_MODEL).strip()
+
+    # ── Build prompt and call Gemini ─────────────────────────────────────────
+    prompt = _build_prompt(ir)
+    raw_response = _call_gemini(prompt, api_key, model)
+
+    if raw_response is None:
+        # API call failed → silent fallback
+        source = SOURCE_API_ERROR if _genai_installed() else SOURCE_SDK_UNAVAILABLE
+        return _default_passes(), {"source": source, "model": model}
+
+    # ── Parse response ───────────────────────────────────────────────────────
+    passes = _parse_response_strict(raw_response)
+
+    if passes is None:
+        # LLM gave no usable output → fall back
+        return _default_passes(), {"source": SOURCE_UNUSABLE_RESPONSE, "model": model}
+
+    return passes, {"source": SOURCE_LLM, "model": model}
+
 
 def get_optimization_advice(ir: str) -> List[str]:
     """
@@ -174,7 +248,7 @@ def get_optimization_advice(ir: str) -> List[str]:
     Falls back to the default fixed pass order silently on any failure:
       - API key not set
       - Network / auth error
-      - Unparseable or empty response
+      - Unparseable response
       - Response contains no valid pass names
 
     Args:
@@ -182,32 +256,8 @@ def get_optimization_advice(ir: str) -> List[str]:
 
     Returns:
         List[str]: Ordered list of pass names from _VALID_PASSES.
-                   Always returns at least the default order — never empty
-                   in the fallback path, may be empty if the LLM explicitly
-                   suggests no optimization is needed.
+                   The default order on any failure.  Empty only if the LLM
+                   explicitly answered [] ("no optimization is beneficial").
     """
-    # ── Check for API key ────────────────────────────────────────────────────
-    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
-
-    if not api_key:
-        # No key → silent fallback (offline / CI mode)
-        return _default_passes()
-
-    model = os.environ.get("ADVISOR_MODEL", _DEFAULT_MODEL).strip()
-
-    # ── Build prompt and call Gemini ─────────────────────────────────────────
-    prompt = _build_prompt(ir)
-    raw_response = _call_gemini(prompt, api_key, model)
-
-    if raw_response is None:
-        # API call failed → silent fallback
-        return _default_passes()
-
-    # ── Parse response ───────────────────────────────────────────────────────
-    passes = _parse_response(raw_response)
-
-    if not passes:
-        # LLM gave no usable output → fall back
-        return _default_passes()
-
+    passes, _ = get_advice_with_source(ir)
     return passes
