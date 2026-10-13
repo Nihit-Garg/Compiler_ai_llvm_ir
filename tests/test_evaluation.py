@@ -122,3 +122,36 @@ def test_saved_answer_is_replayed_without_calling_the_api():
     assert row["llm_suggested"] == ["peephole", "dead_code_elimination"]
     assert row["llm_decision"] == "accepted"
     assert row["llm"] < row["default"]
+
+
+def test_tagged_baseline_is_not_extended_with_new_answers(monkeypatch, tmp_path):
+    """Re-running --tag names_only must not ask the LLM about programs added later."""
+    import json
+    import sys
+    tag = "frozen"
+    (tmp_path / f"llm_suggestions_{tag}.json").write_text(json.dumps({
+        "01_return": {"suggested": [], "source": "llm", "model": "m", "seconds": 1.0}}))
+    monkeypatch.setattr(run_eval, "HERE", tmp_path)
+    monkeypatch.setattr(run_eval, "PROGRAMS", [
+        Path(run_eval.ROOT) / "tests" / "samples" / "01_return.c",
+        BENCH / "b8_simplify_then_fold.c"])
+    monkeypatch.setattr(sys, "argv", ["run_eval.py", "--tag", tag])
+    evaluated = []
+    real = run_eval.evaluate_program
+
+    def record(path, *args, **kwargs):
+        evaluated.append(path.stem)
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(run_eval, "evaluate_program", record)
+    assert run_eval.main() == 0
+    assert evaluated == ["01_return"]
+    rows = json.loads((tmp_path / f"results_{tag}.json").read_text())["programs"]
+    assert [r["program"] for r in rows] == ["01_return"]
+    saved = json.loads((tmp_path / f"llm_suggestions_{tag}.json").read_text())
+    assert list(saved) == ["01_return"]
+
+
+def test_benchmarks_sort_by_number():
+    names = [p.stem.split("_")[0] for p in run_eval.PROGRAMS if p.parent == BENCH]
+    assert names == sorted(names, key=lambda n: int(n[1:]))

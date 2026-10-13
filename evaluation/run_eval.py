@@ -50,8 +50,14 @@ from verifier.pipeline import apply_optimizations, _apply_pass_sequence
 import verifier.pipeline as pipeline
 
 HERE        = Path(__file__).resolve().parent
+def _by_number(path: Path):
+    """b2_x before b10_y: sort on the length of the prefix, then the name."""
+    prefix = path.stem.split("_")[0]
+    return (len(prefix), path.stem)
+
+
 PROGRAMS    = sorted((ROOT / "tests" / "samples").glob("*.c")) + \
-              sorted((HERE / "benchmarks").glob("*.c"))
+              sorted((HERE / "benchmarks").glob("*.c"), key=_by_number)
 
 
 def compile_c(source: str) -> str:
@@ -256,6 +262,11 @@ def main() -> int:
     saved = json.loads(suggestions.read_text(encoding="utf-8")) if suggestions.exists() else {}
     rows = []
     for path in PROGRAMS:
+        if args.tag and not args.live and path.stem not in saved:
+            # A tagged run is a frozen earlier experiment: asking the LLM now
+            # would use today's prompt and file the answer under the old tag.
+            print(f"  {path.stem}: no saved answer for '{args.tag}', skipped", flush=True)
+            continue
         print(f"  {path.stem} ...", flush=True)
         rows.append(evaluate_program(path, saved, args.live, args.retry_errors))
         # Save after every program: a live run is slow and may be interrupted.

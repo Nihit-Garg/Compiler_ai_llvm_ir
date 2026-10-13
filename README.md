@@ -126,7 +126,7 @@ python evaluation/run_eval.py          # rebuild the tables from saved LLM answe
 python evaluation/run_eval.py --live   # ask Gemini again (about a minute per program)
 ```
 
-**Setup.** The programs are the 5 samples in `tests/samples/` plus 7 benchmarks in `evaluation/benchmarks/`, which are written so that pass order matters. For each program the script counts instructions after four options:
+**Setup.** The programs are the 5 samples in `tests/samples/` plus 10 benchmarks in `evaluation/benchmarks/`, which are written so that pass order matters. For each program the script counts instructions after four options:
 - no optimization;
 - the default order (constant folding, DCE, CSE, peephole);
 - the order the LLM (`gemini-3.5-flash-lite`) suggested, after the verifier accepted it;
@@ -134,19 +134,24 @@ python evaluation/run_eval.py --live   # ask Gemini again (about a minute per pr
 
 **Result: the LLM's order is useful.**
 
-| | Instructions (12 programs) | Removed |
+| | Instructions (15 programs) | Removed |
 |---|---:|---:|
-| No optimization | 139 | — |
-| Default order | 129 | 10 |
-| LLM order | **115** | **24** |
-| Best possible | 115 | 24 |
+| No optimization | 173 | — |
+| Default order | 163 | 10 |
+| LLM order | **130** | **43** |
+| Best possible | 130 | 43 |
 
-- The LLM beat the default order on 6 of the 12 programs and matched it on the other 6. It was never worse.
-- It found the best possible order for all 12.
+- The LLM beat the default order on 9 of the 15 programs and matched it on the other 6. It was never worse.
+- It found the best possible order for all 15.
 - The default order is weak because it runs DCE before peephole. That leaves behind the instructions peephole replaces.
+- **The best order depends on the program, and the LLM adapted to it.** Constant folding and peephole can need opposite orders:
+  - `b3` (`a * (3 - 2)`) must fold first: `3 - 2` becomes `1`, then `a * 1` simplifies to `a`.
+  - `b8`–`b10` (for example `(a * 0 + 2) * 3`) must simplify first: `a * 0 + 2` becomes `2`, then `2 * 3` folds to `6`.
+
+  Each pass runs once, so no single fixed order is best for both kinds. The LLM suggested CF → PH → DCE for `b3` and PH → CF → DCE for `b8`–`b10`. These four benchmarks were written to show this conflict.
 - Every LLM suggestion was checked by the verifier before use.
 
-**What made the difference: describing the passes.** The first run gave the LLM only the pass names (results in [`evaluation/results_names_only.md`](evaluation/results_names_only.md)). That run beat the default on 3 programs and reached the best result on 8 of the 9 programs it answered. Adding a one-line description of each pass to the prompt, plus the goal (fewest instructions), raised this to 6 and 12 of 12.
+**What made the difference: describing the passes.** The first run gave the LLM only the pass names (results in [`evaluation/results_names_only.md`](evaluation/results_names_only.md)). That run covered the first 12 programs. It beat the default on 3 of them and reached the best result on 8 of the 9 it answered. On the same 12 programs, adding a one-line description of each pass to the prompt, plus the goal (fewest instructions), raised this to 6, and the best result on all 12. The names-only baseline does not include `b8`–`b10`, which were added later.
 
 **Result: the safety net works.** The script runs the real pipeline on four cases:
 

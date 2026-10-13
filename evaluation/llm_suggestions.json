@@ -99,5 +99,35 @@
     "source": "llm",
     "model": "gemini-3.5-flash-lite",
     "seconds": 130.1
+  },
+  "b8_simplify_then_fold": {
+    "suggested": [
+      "peephole",
+      "constant_folding",
+      "dead_code_elimination"
+    ],
+    "source": "llm",
+    "model": "gemini-3.5-flash-lite",
+    "seconds": 52.0
+  },
+  "b9_simplify_then_fold_two": {
+    "suggested": [
+      "peephole",
+      "constant_folding",
+      "dead_code_elimination"
+    ],
+    "source": "llm",
+    "model": "gemini-3.5-flash-lite",
+    "seconds": 73.4
+  },
+  "b10_simplify_then_fold_div": {
+    "suggested": [
+      "peephole",
+      "constant_folding",
+      "dead_code_elimination"
+    ],
+    "source": "llm",
+    "model": "gemini-3.5-flash-lite",
+    "seconds": 48.7
   }
 }

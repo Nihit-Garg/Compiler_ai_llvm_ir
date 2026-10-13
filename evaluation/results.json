@@ -237,6 +237,81 @@
         "peephole",
         "dead_code_elimination"
       ]
+    },
+    {
+      "program": "b8_simplify_then_fold",
+      "unoptimized": 7,
+      "default": 7,
+      "default_decision": "accepted",
+      "llm": 3,
+      "llm_source": "llm",
+      "llm_suggested": [
+        "peephole",
+        "constant_folding",
+        "dead_code_elimination"
+      ],
+      "llm_decision": "accepted",
+      "llm_final_passes": [
+        "peephole",
+        "constant_folding",
+        "dead_code_elimination"
+      ],
+      "best": 3,
+      "best_passes": [
+        "peephole",
+        "constant_folding",
+        "dead_code_elimination"
+      ]
+    },
+    {
+      "program": "b9_simplify_then_fold_two",
+      "unoptimized": 12,
+      "default": 12,
+      "default_decision": "accepted",
+      "llm": 5,
+      "llm_source": "llm",
+      "llm_suggested": [
+        "peephole",
+        "constant_folding",
+        "dead_code_elimination"
+      ],
+      "llm_decision": "accepted",
+      "llm_final_passes": [
+        "peephole",
+        "constant_folding",
+        "dead_code_elimination"
+      ],
+      "best": 5,
+      "best_passes": [
+        "peephole",
+        "constant_folding",
+        "dead_code_elimination"
+      ]
+    },
+    {
+      "program": "b10_simplify_then_fold_div",
+      "unoptimized": 15,
+      "default": 15,
+      "default_decision": "accepted",
+      "llm": 7,
+      "llm_source": "llm",
+      "llm_suggested": [
+        "peephole",
+        "constant_folding",
+        "dead_code_elimination"
+      ],
+      "llm_decision": "accepted",
+      "llm_final_passes": [
+        "peephole",
+        "constant_folding",
+        "dead_code_elimination"
+      ],
+      "best": 7,
+      "best_passes": [
+        "peephole",
+        "constant_folding",
+        "dead_code_elimination"
+      ]
     }
   ],
   "safety_net": [
