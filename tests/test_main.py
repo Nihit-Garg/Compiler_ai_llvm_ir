@@ -230,7 +230,9 @@ def run_cli_cp1252(cwd: Path, *args: str):
     import subprocess
     env = dict(os.environ, PYTHONIOENCODING="cp1252")
     env.pop("PYTHONUTF8", None)
-    env.pop("GEMINI_API_KEY", None)
+    # Set, but empty: load_dotenv() does not override a variable that is
+    # already set, so a developer's .env cannot turn on the live API here.
+    env["GEMINI_API_KEY"] = ""
     script = Path(main.__file__).resolve()
     return subprocess.run(
         [sys.executable, "-X", "utf8=0", str(script), *args],

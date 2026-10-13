@@ -277,3 +277,23 @@ class TestAdviceSource:
         with patch("advisor.heuristics._call_gemini",
                    return_value='["dead_code_elimination", "peephole"]'):
             assert get_optimization_advice(_IR) == get_advice_with_source(_IR)[0]
+
+
+# ---------------------------------------------------------------------------
+# The prompt explains what each pass does and what the goal is
+# ---------------------------------------------------------------------------
+
+class TestPromptExplainsPasses:
+    def test_every_pass_has_a_description_in_the_prompt(self):
+        from advisor.heuristics import _PASS_DESCRIPTIONS
+        prompt = _build_prompt(_IR)
+        assert set(_PASS_DESCRIPTIONS) == set(_VALID_PASSES)
+        for name in _VALID_PASSES:
+            assert f"- {name}: {_PASS_DESCRIPTIONS[name]}" in prompt
+
+    def test_prompt_says_dce_only_cleans_up_after_earlier_passes(self):
+        prompt = _build_prompt(_IR)
+        assert "cleans up after passes that run before it" in prompt
+
+    def test_prompt_states_the_goal(self):
+        assert "fewest instructions" in _build_prompt(_IR)

@@ -101,3 +101,20 @@ def test_env_example_has_only_a_placeholder_key():
     keys = [l.strip() for l in read(".env.example").splitlines()
             if l.strip().startswith("GEMINI_API_KEY")]
     assert keys == ["GEMINI_API_KEY=your-gemini-api-key-here"]
+
+
+# ---------------------------------------------------------------------------
+# README evaluation numbers come from evaluation/results.json
+# ---------------------------------------------------------------------------
+
+def test_readme_evaluation_totals_match_results():
+    import json
+    results = json.loads(read("evaluation/results.json"))
+    rows = results["programs"]
+    total = {k: sum(r[k] for r in rows) for k in ("unoptimized", "default", "llm", "best")}
+    readme = read("README.md")
+    assert f"| No optimization | {total['unoptimized']} |" in readme
+    assert f"| Default order | {total['default']} | {total['unoptimized'] - total['default']} |" in readme
+    assert f"| LLM order | **{total['llm']}** | **{total['unoptimized'] - total['llm']}** |" in readme
+    assert f"| Best possible | {total['best']} | {total['unoptimized'] - total['best']} |" in readme
+    assert all(c["final_equivalent"] for c in results["safety_net"])

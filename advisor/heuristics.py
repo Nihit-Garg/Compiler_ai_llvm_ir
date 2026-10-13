@@ -63,15 +63,40 @@ _DEFAULT_MODEL = "gemini-3.5-flash-lite"  # GA since 2026-07-21, no shutdown dat
 # Prompt construction
 # ---------------------------------------------------------------------------
 
+# What each pass does, as told to the LLM.  Without these the LLM only sees
+# names and cannot know, for example, that folding and peephole leave the
+# replaced instruction behind for dead_code_elimination to remove.
+_PASS_DESCRIPTIONS = {
+    "constant_folding":
+        "computes arithmetic whose operands are both integer literals "
+        "(e.g. add i32 2, 3) and substitutes the result into later uses; "
+        "the folded instruction is left behind, now unused.",
+    "dead_code_elimination":
+        "removes instructions whose result is never used (and that have no "
+        "side effects) and unreachable blocks. It only removes what is dead "
+        "when it runs, so it cleans up after passes that run before it.",
+    "common_subexpression_elimination":
+        "within one basic block, reuses the result of an earlier identical "
+        "arithmetic or comparison instruction instead of computing it again.",
+    "peephole":
+        "applies algebraic identities: x + 0, x - 0, x * 1, x / 1 become x; "
+        "x * 0 becomes 0; x * 2 becomes x + x. The replaced instruction is "
+        "left behind, now unused.",
+}
+
+
 def _build_prompt(ir: str) -> str:
     """Build the LLM prompt that instructs Gemini to suggest pass ordering."""
-    passes_list = "\n".join(f"- {p}" for p in _VALID_PASSES)
+    passes_list = "\n".join(f"- {p}: {_PASS_DESCRIPTIONS[p]}" for p in _VALID_PASSES)
     return f"""You are an optimization advisor for a simple compiler.
 
 Given the following LLVM IR program, choose an ordered list of optimization passes to apply.
 
 Available passes (use ONLY these exact names, no others):
 {passes_list}
+
+Goal: the fewest instructions in the final IR. Every result is checked for
+correctness, so suggest the order you expect to remove the most instructions.
 
 Rules:
 - Return ONLY a valid JSON array of pass name strings, e.g. ["peephole", "dead_code_elimination"]

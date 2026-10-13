@@ -42,6 +42,7 @@ The JSON report records where the suggestion came from (`advisor_source`: the LL
 - `/backend` — final code generation
 - `/tests` — unit and end-to-end tests; `tests/samples/` holds sample programs and their expected LLVM IR (`.ll`) as ground truth
 - `/docs` — SPEC.md and design docs
+- `/evaluation` — benchmark programs, the evaluation script and its results (see [Evaluation](#evaluation))
 
 ## The Source of Truth: `docs/SPEC.md`
 
@@ -115,3 +116,51 @@ llvmlite 0.40.0 has no wheels for Python 3.12 or later. On 3.12 and 3.13, `pip i
 5. Optional: to use the LLM advisor, copy `.env.example` to `.env` and set `GEMINI_API_KEY`. Without a key, the default pass order is used, and the report says so (`advisor_source: "no_api_key"`).
 
 See `docs/SPEC.md` for the language grammar and detailed module contracts before contributing.
+
+## Evaluation
+
+The evaluation asks two questions: does the LLM's pass order beat the fixed default order, and does the safety net catch bad suggestions? Full tables are in [`evaluation/results.md`](evaluation/results.md).
+
+```bash
+python evaluation/run_eval.py          # rebuild the tables from saved LLM answers (no API key needed)
+python evaluation/run_eval.py --live   # ask Gemini again (about a minute per program)
+```
+
+**Setup.** The programs are the 5 samples in `tests/samples/` plus 7 benchmarks in `evaluation/benchmarks/`, which are written so that pass order matters. For each program the script counts instructions after four options:
+- no optimization;
+- the default order (constant folding, DCE, CSE, peephole);
+- the order the LLM (`gemini-3.5-flash-lite`) suggested, after the verifier accepted it;
+- the best order, found by trying all 64 orderings.
+
+**Result: the LLM's order is useful.**
+
+| | Instructions (12 programs) | Removed |
+|---|---:|---:|
+| No optimization | 139 | — |
+| Default order | 129 | 10 |
+| LLM order | **115** | **24** |
+| Best possible | 115 | 24 |
+
+- The LLM beat the default order on 6 of the 12 programs and matched it on the other 6. It was never worse.
+- It found the best possible order for all 12.
+- The default order is weak because it runs DCE before peephole. That leaves behind the instructions peephole replaces.
+- Every LLM suggestion was checked by the verifier before use.
+
+**What made the difference: describing the passes.** The first run gave the LLM only the pass names (results in [`evaluation/results_names_only.md`](evaluation/results_names_only.md)). That run beat the default on 3 programs and reached the best result on 8 of the 9 programs it answered. Adding a one-line description of each pass to the prompt, plus the goal (fewest instructions), raised this to 6 and 12 of 12.
+
+**Result: the safety net works.** The script runs the real pipeline on four cases:
+
+| Case | What happened |
+|---|---|
+| The LLM suggests a faulty pass (turns `sub` into `add`) | The verifier rejects it and names the input that shows the bug: `@diff(-7, -7): original returned 0, optimized returned -14`. The default order is verified and used instead. |
+| A program the verifier cannot check (never terminates) | The suggestion and the fallback are both rejected, and the IR is left unchanged. |
+| The LLM's answer is unusable | Reported as `unusable_response`. The default order is used, after it is verified. |
+| The LLM answers `[]` | No passes are applied, and the IR is left unchanged. |
+
+In every case, the IR that comes out is equivalent to the IR that went in.
+
+**Limits.**
+- The verifier uses differential testing on sample inputs, not a proof.
+- Instruction count is the only measure; runtime is not timed.
+- The benchmarks are small programs written for this evaluation.
+- Live answers took 30–100 seconds each, and a few calls failed with API errors. Those programs fell back to the default order and were asked again with `--retry-errors`.

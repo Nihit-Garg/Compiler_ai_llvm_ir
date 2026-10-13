@@ -1,0 +1,103 @@
+{
+  "01_return": {
+    "suggested": [],
+    "source": "llm",
+    "model": "gemini-3.5-flash-lite",
+    "seconds": 107.3
+  },
+  "02_add": {
+    "suggested": [],
+    "source": "llm",
+    "model": "gemini-3.5-flash-lite",
+    "seconds": 96.9
+  },
+  "03_if_else": {
+    "suggested": [],
+    "source": "llm",
+    "model": "gemini-3.5-flash-lite",
+    "seconds": 57.8
+  },
+  "04_while": {
+    "suggested": [],
+    "source": "llm",
+    "model": "gemini-3.5-flash-lite",
+    "seconds": 75.5
+  },
+  "05_func_call": {
+    "suggested": [
+      "peephole",
+      "dead_code_elimination"
+    ],
+    "source": "llm",
+    "model": "gemini-3.5-flash-lite",
+    "seconds": 70.3
+  },
+  "b1_constant_chain": {
+    "suggested": [
+      "constant_folding",
+      "dead_code_elimination"
+    ],
+    "source": "llm",
+    "model": "gemini-3.5-flash-lite",
+    "seconds": 64.6
+  },
+  "b2_identities": {
+    "suggested": [
+      "peephole",
+      "dead_code_elimination"
+    ],
+    "source": "llm",
+    "model": "gemini-3.5-flash-lite",
+    "seconds": 75.0
+  },
+  "b3_fold_then_simplify": {
+    "suggested": [
+      "constant_folding",
+      "peephole",
+      "dead_code_elimination"
+    ],
+    "source": "llm",
+    "model": "gemini-3.5-flash-lite",
+    "seconds": 58.0
+  },
+  "b4_mixed": {
+    "suggested": [
+      "peephole",
+      "constant_folding",
+      "common_subexpression_elimination",
+      "dead_code_elimination"
+    ],
+    "source": "llm",
+    "model": "gemini-3.5-flash-lite",
+    "seconds": 110.8
+  },
+  "b5_two_params": {
+    "suggested": [
+      "peephole",
+      "common_subexpression_elimination",
+      "dead_code_elimination"
+    ],
+    "source": "llm",
+    "model": "gemini-3.5-flash-lite",
+    "seconds": 75.6
+  },
+  "b6_loop": {
+    "suggested": [
+      "peephole",
+      "dead_code_elimination"
+    ],
+    "source": "llm",
+    "model": "gemini-3.5-flash-lite",
+    "seconds": 89.0
+  },
+  "b7_calls": {
+    "suggested": [
+      "constant_folding",
+      "peephole",
+      "dead_code_elimination"
+    ],
+    "source": "llm",
+    "model": "gemini-3.5-flash-lite",
+    "seconds": 130.1
+  }
+}
