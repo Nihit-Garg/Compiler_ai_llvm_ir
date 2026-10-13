@@ -254,3 +254,51 @@ class TestNarrowOutputEncoding:
         assert result.returncode == 1
         assert "Traceback" not in stderr
         assert "File not found" in stderr
+
+
+# ---------------------------------------------------------------------------
+# File encoding: IR, report and source are read and written as UTF-8
+# ---------------------------------------------------------------------------
+
+KEEP_SOURCE = "int f(int a) { return a * 1 + 0; }\n"
+
+
+def cp1252_default_open(calls):
+    """
+    An open() that behaves like Windows with a cp1252 locale: text files
+    opened without an explicit encoding get cp1252.  Every call is recorded.
+    """
+    import builtins
+
+    def fake_open(file, mode="r", *args, **kwargs):
+        calls.append((str(file), mode, kwargs.get("encoding")))
+        if "b" not in mode and "encoding" not in kwargs and len(args) < 2:
+            kwargs["encoding"] = "cp1252"
+        return builtins.open(file, mode, *args, **kwargs)
+    return fake_open
+
+
+class TestFileEncoding:
+    def test_writes_ir_for_program_the_peephole_rewrites(self, monkeypatch, tmp_path, in_tmp, no_key):
+        (tmp_path / "keep.c").write_text(KEEP_SOURCE, encoding="utf-8")
+        calls = []
+        monkeypatch.setattr(main, "open", cp1252_default_open(calls), raising=False)
+
+        assert run_main(monkeypatch, "keep.c", "-q") == 0
+
+        ir = (tmp_path / "build" / "keep.ll").read_text(encoding="utf-8")
+        assert "define i32 @f(i32 %a)" in ir
+        assert "; peephole" in ir
+        report = json.loads((tmp_path / "build" / "keep_report.json").read_text(encoding="utf-8"))
+        assert report["exit_code"] == 0
+
+    def test_every_text_file_is_opened_as_utf8(self, monkeypatch, tmp_path, in_tmp, no_key):
+        (tmp_path / "keep.c").write_text(KEEP_SOURCE, encoding="utf-8")
+        calls = []
+        monkeypatch.setattr(main, "open", cp1252_default_open(calls), raising=False)
+
+        assert run_main(monkeypatch, "keep.c", "-q") == 0
+
+        text_opens = [c for c in calls if "b" not in c[1]]
+        assert {Path(c[0]).name for c in text_opens} == {"keep.c", "keep.ll", "keep_report.json"}
+        assert all(c[2] == "utf-8" for c in text_opens), text_opens

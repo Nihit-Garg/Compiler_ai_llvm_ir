@@ -148,7 +148,7 @@ def compile_source(
     t_start = time.perf_counter()
 
     # ── Read source ───────────────────────────────────────────────────────────
-    with open(src_path) as f:
+    with open(src_path, encoding="utf-8") as f:
         source = f.read()
 
     TOTAL = 4 if not do_compile else 5
@@ -246,7 +246,7 @@ def compile_source(
     # report and the exit status say it is not valid.
     ir_path = Path(output_ir)
     ir_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(ir_path, "w") as f:
+    with open(ir_path, "w", encoding="utf-8") as f:
         f.write(final_ir)
 
     # ── Step 5 (optional): Compile to object code ─────────────────────────────
@@ -283,7 +283,7 @@ def compile_source(
 
     rpt_path = Path(output_report)
     rpt_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(rpt_path, "w") as f:
+    with open(rpt_path, "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2)
 
     # ── Summary ───────────────────────────────────────────────────────────────

@@ -675,3 +675,61 @@ def test_cse_renumbers_temporaries_after_removal():
     assert _numbered_defs(out) == [0, 1]
     assert "%1 = mul i32 %0, %0" in out
     assert "ret i32 %1" in out
+
+
+# ---------------------------------------------------------------------------
+# Output encoding: optimized IR must be plain ASCII
+# ---------------------------------------------------------------------------
+# main.py writes the IR to a file and the pipeline may print it.  A non-ASCII
+# character in a comment (it used to be "→") breaks writing on systems whose
+# default encoding is not UTF-8, such as cp1252 on Windows.
+
+def _source_to_ir(source: str) -> str:
+    from frontend.lexer import lex
+    from frontend.parser import parse
+    from frontend.semantic import analyze
+    from ir.generator import generate_ir
+    return generate_ir(analyze(parse(lex(source))))
+
+
+def _ascii_test_programs():
+    import os
+    from tests.test_ir_generator import PROGRAMS_BEYOND_SAMPLES
+    samples = os.path.join(os.path.dirname(__file__), "samples")
+    programs = {
+        # peephole rewrites both identities and annotates the line
+        "keep": "int f(int a) { return a * 1 + 0; }",
+        # constant folding annotates the folded line
+        "fold": "int main() { int x = 2 + 3; return x * 4; }",
+    }
+    for name in sorted(os.listdir(samples)):
+        if name.endswith(".c"):
+            with open(os.path.join(samples, name), encoding="utf-8") as f:
+                programs[name] = f.read()
+    for name, source, _fn, _cases in PROGRAMS_BEYOND_SAMPLES:
+        programs[name] = source
+    return programs
+
+
+_PASSES = {
+    "constant_folding": constant_folding,
+    "dead_code_elimination": dead_code_elimination,
+    "common_subexpression_elimination": common_subexpression_elimination,
+    "peephole": peephole,
+    "optimize": optimize,
+}
+
+
+@pytest.mark.parametrize("pass_name", sorted(_PASSES))
+def test_every_pass_output_is_ascii(pass_name):
+    fn = _PASSES[pass_name]
+    for name, source in _ascii_test_programs().items():
+        out = fn(_source_to_ir(source))
+        bad = sorted({ch for ch in out if ord(ch) > 127})
+        assert not bad, f"{pass_name} on {name}: non-ASCII {bad!r}"
+
+
+def test_annotating_passes_were_exercised():
+    """The ASCII test above must cover the passes that write comments."""
+    assert "; peephole" in peephole(_source_to_ir("int f(int a) { return a * 1 + 0; }"))
+    assert "; folded" in constant_folding(_source_to_ir("int main() { return 2 + 3; }"))

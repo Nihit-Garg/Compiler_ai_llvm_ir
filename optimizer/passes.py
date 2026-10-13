@@ -168,7 +168,7 @@ def _renumber_temporaries(lines: List[str]) -> List[str]:
 
     out: List[str] = []
     for line in lines:
-        # Leave trailing comments (e.g. "; folded → 5") exactly as they are.
+        # Leave trailing comments (e.g. "; folded -> 5") exactly as they are.
         code, sep, comment = line.partition(";")
         out.append(rename(code) + sep + comment)
     return out
@@ -249,7 +249,7 @@ def _fold_function(fn_text: str) -> str:
                         # Elide the instruction entirely (dead after folding).
                         result.append(
                             line.rstrip('\n').rstrip('\r') +
-                            f"  ; folded → {computed}\n"
+                            f"  ; folded -> {computed}\n"
                         )
                         continue
         # Substitute any known constants into this line's operands
@@ -562,7 +562,7 @@ def _peephole_function(fn_text: str) -> str:
                     # Elide the original instruction
                     result.append(
                         new_line.rstrip('\n').rstrip('\r') +
-                        f"  ; peephole → {replacement}\n"
+                        f"  ; peephole -> {replacement}\n"
                     )
                     continue
                 elif isinstance(replacement, tuple):
