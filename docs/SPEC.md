@@ -204,6 +204,8 @@ def get_optimization_advice(ir: str) -> List[str]:
 
 ### `verifier/check.py`
 ```python
+from typing import Optional
+
 def verify_ir(ir: str) -> bool:
     """Structural well-formedness check. True if IR has valid shape."""
     pass
@@ -211,25 +213,49 @@ def verify_ir(ir: str) -> bool:
 def verify_equivalence(original_ir: str, optimized_ir: str) -> bool:
     """
     Differential testing.  Interprets both IRs on concrete integer inputs.
-    Returns True only if they produce identical outputs on all tested inputs.
-    False means the optimization changed observable behaviour — must reject.
+    Returns True only if equivalence was established: identical outcomes on
+    every tested input the original finishes on, with at least one such input
+    per function.  False means the optimized IR must not be used.
     """
     pass
+
+def equivalence_failure_reason(original_ir: str, optimized_ir: str) -> Optional[str]:
+    """One-line reason why verify_equivalence() is False, or None if it is True."""
+    pass
 ```
+
+Verifier rules (the interpreter must follow LLVM's `i32` semantics):
+
+- Arithmetic is 32-bit two's complement: `add`, `sub` and `mul` wrap; `sdiv` truncates toward zero.
+- A run ends as a **value**, a **trap** (division by zero, or `INT_MIN / -1`) or **inconclusive** (step limit or call-depth limit reached).
+- Value and trap are compared between the two IRs. An inconclusive run of the original is skipped and never counts as agreement.
+- A function with no conclusive input is **not verified**.
+- IR the interpreter cannot execute (unknown instruction, undefined register, block without terminator) is never equivalent.
+
+The optimizer's constant folding must follow the same arithmetic rules, and must not fold a division that would trap.
 
 ### `verifier/pipeline.py` (NEW)
 ```python
 from typing import Dict, Any, Tuple
 
-def apply_optimizations(ir: str) -> Tuple[str, Dict[str, Any]]:
+def apply_optimizations(ir: str, use_advisor: bool = True) -> Tuple[str, Dict[str, Any]]:
     """
     Full advisor → verify → fallback pipeline.
     Returns (final_ir, report_dict).
     report_dict keys: suggested_passes, decision, rejection_reason,
-                      fallback_passes, final_passes.
+                      fallback_passes, fallback_decision,
+                      fallback_rejection_reason, final_passes.
     """
     pass
 ```
+
+Pipeline rules:
+
+- The suggested pass order is verified against the original IR. If verified, it is used (`decision = "accepted"`).
+- Otherwise (`decision = "rejected"`) the default pass order is applied **and verified the same way** (`fallback_decision`).
+- If the default order is not verified either, the original IR is returned unchanged and `final_passes` is `[]`.
+- `use_advisor=False` skips the LLM and uses the default order as the suggestion; verification still applies.
+- No path may emit optimized IR that the verifier has not passed.
 
 ### `backend/codegen.py`
 ```python

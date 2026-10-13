@@ -20,13 +20,22 @@ Design notes
 * The interpreter only needs to handle the LLVM IR subset that our generator
   (ir/generator.py) emits.  It is NOT a general LLVM IR interpreter.
 * Differential testing is not a formal proof; it catches real bugs fast.
-* Division by zero and step-limit overflows are treated as "runtime errors";
-  if BOTH the original and optimised IRs crash identically, that counts as
-  equivalent (the crash is a property of the input, not the optimisation).
+* Arithmetic is 32-bit two's complement, like LLVM's i32: results wrap, and
+  `sdiv` truncates toward zero.
+* A run of one function on one input ends in one of three ways:
+    - a value            the function returned
+    - a trap             division by zero, or INT_MIN / -1
+    - inconclusive       the step limit or call-depth limit was hit first
+  Value and trap are compared between the two IRs.  An inconclusive run of
+  the ORIGINAL proves nothing, so that input is skipped; it is never counted
+  as "both behave the same".  If a function has no conclusive input at all,
+  equivalence is NOT established and the verifier answers False.
+* IR the interpreter cannot execute (unknown instruction, undefined
+  register, block without terminator) is never treated as equivalent.
 """
 
 import re
-from itertools import product
+from functools import lru_cache
 from typing import Dict, List, Optional, Tuple
 
 # ---------------------------------------------------------------------------
@@ -48,9 +57,17 @@ _RET_RE      = re.compile(r'^\s+ret i32\s+([\w%.\-]+)')
 _CALL_RE     = re.compile(r'^\s+(%[\w.]+)\s*=\s*call i32 @([\w]+)\((.*?)\)')
 _CALL_ARG_RE = re.compile(r'i32 ([\w%.\-]+)')
 
-_MAX_STEPS   = 10_000   # guard against infinite loops in test inputs
-_TEST_VALUES = [-1, 0, 1, 5, 42]  # concrete integers to test with
-_MAX_TESTS   = 50       # cap total test cases for speed
+_MAX_STEPS      = 100_000  # per run; beyond this the run is "inconclusive"
+_MAX_CALL_DEPTH = 100      # nested IR calls per run; beyond this "inconclusive"
+_TEST_VALUES    = [-7, -1, 0, 1, 2, 5, 42]  # concrete integers to test with
+_MAX_TESTS      = 50       # cap total test cases per function for speed
+
+_INT32_MIN = -(2 ** 31)
+
+
+def _wrap_i32(value: int) -> int:
+    """Reduce a Python int to the signed 32-bit value LLVM's i32 would hold."""
+    return ((value + 2 ** 31) % 2 ** 32) - 2 ** 31
 
 
 # ---------------------------------------------------------------------------
@@ -138,7 +155,19 @@ def _parse_ir(ir_text: str) -> _IRModule:
 # ---------------------------------------------------------------------------
 
 class _RuntimeError(Exception):
-    """Raised on division-by-zero or step-limit exceeded during interpretation."""
+    """Base class for anything that stops a run before it returns a value."""
+
+
+class _Trap(_RuntimeError):
+    """The program itself faulted: division by zero or INT_MIN / -1."""
+
+
+class _Inconclusive(_RuntimeError):
+    """The step limit or call-depth limit was reached; the result is unknown."""
+
+
+class _Malformed(_RuntimeError):
+    """The IR cannot be executed (unknown instruction, undefined value, ...)."""
 
 
 class _Frame:
@@ -151,27 +180,44 @@ class _Frame:
 class _Interpreter:
     """Pure-Python interpreter for our LLVM IR subset."""
 
-    def __init__(self, module: _IRModule):
+    def __init__(self, module: _IRModule,
+                 max_steps: Optional[int] = None,
+                 max_call_depth: Optional[int] = None):
         self.module = module
         self._steps = 0
+        self._depth = 0
+        self._max_steps = _MAX_STEPS if max_steps is None else max_steps
+        self._max_depth = (_MAX_CALL_DEPTH if max_call_depth is None
+                           else max_call_depth)
+        self._decoded: Dict[str, tuple] = {}   # instruction text → decoded form
 
     def call(self, fn_name: str, args: List[int]) -> int:
         """Execute a function and return its i32 return value."""
         fn = self.module.functions.get(fn_name)
         if fn is None:
-            raise _RuntimeError(f"Unknown function: @{fn_name}")
+            raise _Malformed(f"Unknown function: @{fn_name}")
+        if len(args) != len(fn.params):
+            raise _Malformed(
+                f"@{fn_name} expects {len(fn.params)} argument(s), got {len(args)}")
 
-        frame = _Frame()
-        # Pre-load parameters as SSA registers
-        for param, val in zip(fn.params, args):
-            frame.regs[f"%{param}"] = val
-
-        return self._run(fn, frame)
+        self._depth += 1
+        if self._depth > self._max_depth:
+            raise _Inconclusive("Call depth limit exceeded (possible infinite recursion)")
+        try:
+            frame = _Frame()
+            # Pre-load parameters as SSA registers
+            for param, val in zip(fn.params, args):
+                frame.regs[f"%{param}"] = _wrap_i32(val)
+            return self._run(fn, frame)
+        finally:
+            self._depth -= 1
 
     def _run(self, fn: _IRFunction, frame: _Frame) -> int:
         block_label = fn.entry
         while True:
-            instrs = fn.blocks.get(block_label, [])
+            instrs = fn.blocks.get(block_label)
+            if instrs is None:
+                raise _Malformed(f"Branch to unknown block '{block_label}'")
             for instr in instrs:
                 result = self._exec(instr, frame)
                 if result is None:
@@ -184,7 +230,48 @@ class _Interpreter:
                     break   # restart block loop with new label
             else:
                 # Block ended without a terminator — shouldn't happen in valid IR
-                raise _RuntimeError(f"Block '{block_label}' has no terminator")
+                raise _Malformed(f"Block '{block_label}' has no terminator")
+
+    # ── Decoding (done once per distinct instruction text) ──────────────────
+
+    def _decode(self, line: str) -> tuple:
+        cached = self._decoded.get(line)
+        if cached is None:
+            cached = self._decode_uncached(line)
+            self._decoded[line] = cached
+        return cached
+
+    @staticmethod
+    def _decode_uncached(line: str) -> tuple:
+        m = _ALLOCA_RE.match(line)
+        if m:
+            return ('alloca', m.group(1))
+        m = _STORE_RE.match(line)
+        if m:
+            return ('store', m.group(1), m.group(2))
+        m = _LOAD_RE.match(line)
+        if m:
+            return ('load', m.group(1), m.group(2))
+        m = _BINOP_RE.match(line)
+        if m:
+            return ('binop',) + m.groups()
+        m = _ICMP_RE.match(line)
+        if m:
+            return ('icmp',) + m.groups()
+        m = _BR_COND_RE.match(line)
+        if m:
+            return ('condbr',) + m.groups()
+        m = _BR_UNCOND_RE.match(line)
+        if m:
+            return ('br', m.group(1))
+        m = _RET_RE.match(line)
+        if m:
+            return ('ret', m.group(1))
+        m = _CALL_RE.match(line)
+        if m:
+            dst, callee, args_str = m.groups()
+            return ('call', dst, callee, tuple(_CALL_ARG_RE.findall(args_str)))
+        return ('unknown', line.strip())
 
     def _exec(self, line: str, frame: _Frame):
         """
@@ -195,77 +282,65 @@ class _Interpreter:
           ('br', label_str)    → jump to this block label
         """
         self._steps += 1
-        if self._steps > _MAX_STEPS:
-            raise _RuntimeError("Step limit exceeded (possible infinite loop)")
+        if self._steps > self._max_steps:
+            raise _Inconclusive("Step limit exceeded (possible infinite loop)")
 
-        # alloca
-        m = _ALLOCA_RE.match(line)
-        if m:
-            frame.mem[m.group(1)] = 0
+        op = self._decode(line)
+        kind = op[0]
+
+        if kind == 'load':
+            _, dst, slot = op
+            if slot not in frame.mem:
+                raise _Malformed(f"Load from unknown slot: {slot}")
+            frame.regs[dst] = frame.mem[slot]
             return None
 
-        # store
-        m = _STORE_RE.match(line)
-        if m:
-            val  = self._resolve(m.group(1), frame)
-            slot = m.group(2)
-            frame.mem[slot] = val
+        if kind == 'store':
+            _, val_s, slot = op
+            if slot not in frame.mem:
+                raise _Malformed(f"Store to unknown slot: {slot}")
+            frame.mem[slot] = self._resolve(val_s, frame)
             return None
 
-        # load
-        m = _LOAD_RE.match(line)
-        if m:
-            dst  = m.group(1)
-            slot = m.group(2)
-            frame.regs[dst] = frame.mem.get(slot, 0)
-            return None
-
-        # binary arithmetic
-        m = _BINOP_RE.match(line)
-        if m:
-            dst, op, lhs_s, rhs_s = m.groups()
+        if kind == 'binop':
+            _, dst, opcode, lhs_s, rhs_s = op
             lhs = self._resolve(lhs_s, frame)
             rhs = self._resolve(rhs_s, frame)
-            frame.regs[dst] = self._arith(op, lhs, rhs)
+            frame.regs[dst] = self._arith(opcode, lhs, rhs)
             return None
 
-        # icmp
-        m = _ICMP_RE.match(line)
-        if m:
-            dst, pred, lhs_s, rhs_s = m.groups()
+        if kind == 'icmp':
+            _, dst, pred, lhs_s, rhs_s = op
             lhs = self._resolve(lhs_s, frame)
             rhs = self._resolve(rhs_s, frame)
             frame.regs[dst] = self._icmp(pred, lhs, rhs)
             return None
 
-        # conditional branch
-        m = _BR_COND_RE.match(line)
-        if m:
-            cond_reg, true_lbl, false_lbl = m.groups()
+        if kind == 'condbr':
+            _, cond_reg, true_lbl, false_lbl = op
             cond_val = self._resolve(cond_reg, frame)
             return ('br', true_lbl if cond_val else false_lbl)
 
-        # unconditional branch
-        m = _BR_UNCOND_RE.match(line)
-        if m:
-            return ('br', m.group(1))
+        if kind == 'br':
+            return ('br', op[1])
 
-        # ret
-        m = _RET_RE.match(line)
-        if m:
-            return ('ret', self._resolve(m.group(1), frame))
+        if kind == 'ret':
+            return ('ret', self._resolve(op[1], frame))
 
-        # call
-        m = _CALL_RE.match(line)
-        if m:
-            dst, callee_name, args_str = m.groups()
-            arg_vals = [self._resolve(v, frame)
-                        for v in _CALL_ARG_RE.findall(args_str)]
+        if kind == 'call':
+            _, dst, callee_name, arg_names = op
+            arg_vals = [self._resolve(v, frame) for v in arg_names]
             frame.regs[dst] = self.call(callee_name, arg_vals)
             return None
 
-        # Anything else (blank, comment, opening/closing brace) — ignore
-        return None
+        if kind == 'alloca':
+            # Uninitialised memory reads as 0 in both IRs being compared.
+            frame.mem[op[1]] = 0
+            return None
+
+        # Never skip what we do not understand: a silently ignored instruction
+        # would let two different programs look the same.
+        raise _Malformed(f"Unrecognised instruction: {op[1]!r}")
 
     # ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -274,27 +349,28 @@ class _Interpreter:
         """Resolve an operand to an integer: either an SSA name or a literal."""
         operand = operand.strip()
         if operand.startswith('%'):
-            # SSA register or alloca slot — check both
             if operand in frame.regs:
                 return frame.regs[operand]
-            if operand in frame.mem:
-                return frame.mem[operand]
-            raise _RuntimeError(f"Use of undefined register: {operand}")
+            raise _Malformed(f"Use of undefined register: {operand}")
         try:
-            return int(operand)
+            return _wrap_i32(int(operand))
         except ValueError:
-            raise _RuntimeError(f"Cannot resolve operand: {operand!r}")
+            raise _Malformed(f"Cannot resolve operand: {operand!r}")
 
     @staticmethod
     def _arith(op: str, lhs: int, rhs: int) -> int:
-        if op == 'add':  return lhs + rhs
-        if op == 'sub':  return lhs - rhs
-        if op == 'mul':  return lhs * rhs
+        if op == 'add':  return _wrap_i32(lhs + rhs)
+        if op == 'sub':  return _wrap_i32(lhs - rhs)
+        if op == 'mul':  return _wrap_i32(lhs * rhs)
         if op == 'sdiv':
             if rhs == 0:
-                raise _RuntimeError("Division by zero")
-            return int(lhs / rhs)  # truncate toward zero (C semantics)
-        raise _RuntimeError(f"Unknown arithmetic op: {op}")
+                raise _Trap("Division by zero")
+            if lhs == _INT32_MIN and rhs == -1:
+                raise _Trap("Signed division overflow (INT_MIN / -1)")
+            # Truncate toward zero (C / LLVM semantics), in exact integer maths.
+            quotient = abs(lhs) // abs(rhs)
+            return -quotient if (lhs < 0) != (rhs < 0) else quotient
+        raise _Malformed(f"Unknown arithmetic op: {op}")
 
     @staticmethod
     def _icmp(pred: str, lhs: int, rhs: int) -> int:
@@ -304,7 +380,7 @@ class _Interpreter:
         if pred == 'sge':  return int(lhs >= rhs)
         if pred == 'eq':   return int(lhs == rhs)
         if pred == 'ne':   return int(lhs != rhs)
-        raise _RuntimeError(f"Unknown icmp predicate: {pred}")
+        raise _Malformed(f"Unknown icmp predicate: {pred}")
 
 
 # ---------------------------------------------------------------------------
@@ -314,12 +390,108 @@ class _Interpreter:
 def _generate_inputs(n_params: int) -> List[Tuple[int, ...]]:
     """
     Generate concrete integer input tuples for a function with n_params parameters.
-    Uses the Cartesian product of _TEST_VALUES, capped at _MAX_TESTS.
+
+    Uses the full Cartesian product of _TEST_VALUES when it fits in _MAX_TESTS.
+    Otherwise it takes an evenly spaced sample of the product, so that every
+    parameter still sees every test value (taking just the first _MAX_TESTS
+    tuples would leave the leading parameters stuck on one or two values).
     """
     if n_params == 0:
         return [()]
-    combos = list(product(_TEST_VALUES, repeat=n_params))
-    return combos[:_MAX_TESTS]
+    base = len(_TEST_VALUES)
+    total = base ** n_params
+    step = 1 if total <= _MAX_TESTS else -(-total // _MAX_TESTS)   # ceil
+    if step > 1 and step % base == 0:
+        step += 1      # a multiple of base would freeze the last parameter
+    inputs: List[Tuple[int, ...]] = []
+    for index in range(0, total, step):
+        digits = []
+        for _ in range(n_params):
+            index, digit = divmod(index, base)
+            digits.append(_TEST_VALUES[digit])
+        inputs.append(tuple(reversed(digits)))
+    return inputs[:_MAX_TESTS]
+
+
+# ---------------------------------------------------------------------------
+# Running one function on one input
+# ---------------------------------------------------------------------------
+
+_VALUE, _TRAP, _INCONCLUSIVE, _MALFORMED = "value", "trap", "inconclusive", "malformed"
+
+
+def _run_once(module: _IRModule, fn_name: str, args: Tuple[int, ...],
+              max_steps: int, max_call_depth: int) -> Tuple[str, object]:
+    """
+    Interpret one call and classify how it ended.
+    Returns (kind, detail): kind is one of the four constants above; detail is
+    the returned integer for a value, otherwise a short message.
+    """
+    interp = _Interpreter(module, max_steps=max_steps, max_call_depth=max_call_depth)
+    try:
+        return _VALUE, interp.call(fn_name, list(args))
+    except _Trap as e:
+        return _TRAP, str(e)
+    except (_Inconclusive, RecursionError) as e:
+        return _INCONCLUSIVE, str(e) or "recursion limit"
+    except _RuntimeError as e:
+        return _MALFORMED, str(e)
+
+
+@lru_cache(maxsize=8)
+def _compare(original_ir: str, optimized_ir: str,
+             max_steps: int, max_call_depth: int) -> Optional[str]:
+    """
+    Core of the differential verifier.
+
+    Returns None if the two IRs were shown to behave the same on the test
+    inputs, otherwise a one-line reason why equivalence was not established.
+    Cached, so asking for the verdict and then for the reason costs one run.
+    """
+    try:
+        orig_module = _parse_ir(original_ir)
+        opt_module  = _parse_ir(optimized_ir)
+    except Exception as e:
+        return f"IR could not be parsed: {e}"
+
+    if not orig_module.functions:
+        return "Original IR contains no functions"
+
+    # Check that both modules export the same set of function names
+    if set(orig_module.functions.keys()) != set(opt_module.functions.keys()):
+        return "Function sets differ between original and optimized IR"
+
+    for fn_name, orig_fn in orig_module.functions.items():
+        opt_fn = opt_module.functions[fn_name]
+        if len(opt_fn.params) != len(orig_fn.params):
+            return f"@{fn_name}: parameter count changed"
+
+        conclusive = 0
+        for args in _generate_inputs(len(orig_fn.params)):
+            orig_kind, orig_val = _run_once(orig_module, fn_name, args,
+                                            max_steps, max_call_depth)
+            if orig_kind == _MALFORMED:
+                return f"@{fn_name}{args}: original IR cannot be executed ({orig_val})"
+            if orig_kind == _INCONCLUSIVE:
+                continue        # this input tells us nothing about either IR
+
+            opt_kind, opt_val = _run_once(opt_module, fn_name, args,
+                                          max_steps, max_call_depth)
+            if opt_kind == _MALFORMED:
+                return f"@{fn_name}{args}: optimized IR cannot be executed ({opt_val})"
+            if opt_kind != orig_kind:
+                return (f"@{fn_name}{args}: original ended with {orig_kind}, "
+                        f"optimized with {opt_kind}")
+            if orig_kind == _VALUE and orig_val != opt_val:
+                return (f"@{fn_name}{args}: original returned {orig_val}, "
+                        f"optimized returned {opt_val}")
+            conclusive += 1
+
+        if conclusive == 0:
+            return (f"@{fn_name}: inconclusive, no test input finished within "
+                    f"{max_steps} steps / call depth {max_call_depth}")
+
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -369,12 +541,14 @@ def verify_equivalence(original_ir: str, optimized_ir: str) -> bool:
     Differential testing verifier.
 
     Interprets both the original and optimized LLVM IR on a set of concrete
-    integer inputs and returns True only if they produce identical outputs on
-    every tested input combination.
+    integer inputs and returns True only if they produce identical outcomes on
+    every input the original finishes on, and every function has at least one
+    such input.
 
-    A return value of False means the optimization changed observable behaviour
-    and must be rejected; the fallback pipeline will use the safe default pass
-    order instead.
+    A return value of False means equivalence was NOT established: either the
+    outputs differ, or the IR could not be executed, or no test input finished
+    within the limits.  The pipeline must then not use the optimized IR.  Use
+    equivalence_failure_reason() to find out which.
 
     Args:
         original_ir (str):   The unoptimized LLVM IR (output of generate_ir).
@@ -383,40 +557,13 @@ def verify_equivalence(original_ir: str, optimized_ir: str) -> bool:
     Returns:
         bool: True if behaviourally equivalent on all tested inputs.
     """
-    try:
-        orig_module = _parse_ir(original_ir)
-        opt_module  = _parse_ir(optimized_ir)
-    except Exception:
-        return False
+    return _compare(original_ir, optimized_ir, _MAX_STEPS, _MAX_CALL_DEPTH) is None
 
-    # Check that both modules export the same set of function names
-    if set(orig_module.functions.keys()) != set(opt_module.functions.keys()):
-        return False
 
-    for fn_name, orig_fn in orig_module.functions.items():
-        opt_fn = opt_module.functions.get(fn_name)
-        if opt_fn is None:
-            return False
-
-        n_params = len(orig_fn.params)
-        test_inputs = _generate_inputs(n_params)
-
-        for args in test_inputs:
-            # Run original
-            orig_interp = _Interpreter(orig_module)
-            try:
-                orig_result = orig_interp.call(fn_name, list(args))
-            except _RuntimeError:
-                orig_result = None  # runtime error — treat as "crashed"
-
-            # Run optimised
-            opt_interp = _Interpreter(opt_module)
-            try:
-                opt_result = opt_interp.call(fn_name, list(args))
-            except _RuntimeError:
-                opt_result = None
-
-            if orig_result != opt_result:
-                return False  # outputs differ → not equivalent
-
-    return True
+def equivalence_failure_reason(original_ir: str, optimized_ir: str) -> Optional[str]:
+    """
+    Why verify_equivalence() answers False for this pair, as one line of text,
+    or None if the pair is equivalent.  Shares its work with
+    verify_equivalence(), so calling both does not interpret the IR twice.
+    """
+    return _compare(original_ir, optimized_ir, _MAX_STEPS, _MAX_CALL_DEPTH)

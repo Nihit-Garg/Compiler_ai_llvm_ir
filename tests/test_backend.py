@@ -62,3 +62,27 @@ class TestGenerateObjectCode:
         opt_ir = optimize(ir)
         obj = generate_object_code(opt_ir)
         assert len(obj) > 0
+
+    def test_any_pass_order_gives_ir_that_llvm_accepts(self):
+        """
+        Every ordering of the four passes must leave IR that real LLVM parses.
+        (Deleting an unnamed temporary used to leave a numbering gap.)
+        """
+        from itertools import permutations
+        from frontend.lexer import lex
+        from frontend.parser import parse
+        from frontend.semantic import analyze
+        from ir.generator import generate_ir
+        from optimizer import passes
+
+        src = "int f(int a, int b) { int r = (0 * a) + (b + b) * (a * 1) + 2 * 3; return r; }"
+        ir = generate_ir(analyze(parse(lex(src))))
+        names = ["constant_folding", "dead_code_elimination",
+                 "common_subexpression_elimination", "peephole"]
+        for size in range(1, len(names) + 1):
+            for order in permutations(names, size):
+                out = ir
+                for name in order:
+                    out = getattr(passes, name)(out)
+                obj = generate_object_code(out)      # raises if LLVM rejects it
+                assert len(obj) > 0, f"empty object code for order {order}"

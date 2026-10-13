@@ -512,3 +512,166 @@ def test_each_pass_is_callable():
                common_subexpression_elimination, peephole, optimize]:
         result = fn(test_ir)
         assert isinstance(result, str), f"{fn.__name__} did not return str"
+
+
+# ===========================================================================
+# Regression tests: arithmetic must match LLVM's i32 semantics
+# ===========================================================================
+
+def _ret_main(body: str) -> str:
+    return f"define i32 @main() {{\nentry:\n{body}}}\n"
+
+
+@pytest.mark.parametrize("lhs, rhs, expected", [
+    (-7, 2, -3),     # truncates toward zero, not down to -4
+    (7, -2, -3),
+    (-7, -2, 3),
+    (7, 2, 3),
+    (-1, 2, 0),
+])
+def test_constant_folding_sdiv_truncates_toward_zero(lhs, rhs, expected):
+    ir = _ret_main(f"  %q = sdiv i32 {lhs}, {rhs}\n  ret i32 %q\n")
+    assert f"ret i32 {expected}\n" in constant_folding(ir)
+
+
+def test_constant_folding_chain_with_negative_intermediate():
+    """(0 - 7) / 2 is -3 in C and in LLVM."""
+    ir = _ret_main(
+        "  %sub = sub i32 0, 7\n"
+        "  %sdiv = sdiv i32 %sub, 2\n"
+        "  ret i32 %sdiv\n"
+    )
+    assert "ret i32 -3\n" in constant_folding(ir)
+
+
+def test_constant_folding_wraps_to_32_bits():
+    """65536 * 65536 overflows i32 and wraps to 0; folding must agree."""
+    ir = _ret_main(
+        "  %mul = mul i32 65536, 65536\n"
+        "  %sdiv = sdiv i32 %mul, 2\n"
+        "  ret i32 %sdiv\n"
+    )
+    assert "ret i32 0\n" in constant_folding(ir)
+
+
+def test_constant_folding_add_wraps_at_int_max():
+    ir = _ret_main("  %add = add i32 2147483647, 1\n  ret i32 %add\n")
+    assert "ret i32 -2147483648\n" in constant_folding(ir)
+
+
+def test_constant_folding_int_min_div_minus_one_skipped():
+    """INT_MIN / -1 overflows; like division by zero it must not be folded."""
+    ir = _ret_main("  %q = sdiv i32 -2147483648, -1\n  ret i32 %q\n")
+    assert "ret i32 %q\n" in constant_folding(ir)
+
+
+# ===========================================================================
+# Regression tests: DCE must not change behaviour or break the module
+# ===========================================================================
+
+def test_dce_keeps_unused_call():
+    """A call may loop or trap, so it stays even if its result is unused."""
+    ir = (
+        "define i32 @g(i32 %a) {\nentry:\n  ret i32 %a\n}\n\n"
+        "define i32 @main() {\nentry:\n"
+        "  %call = call i32 @g(i32 1)\n"
+        "  ret i32 5\n}\n"
+    )
+    assert "%call = call i32 @g(i32 1)" in dead_code_elimination(ir)
+
+
+def test_dce_keeps_unused_division_that_may_trap():
+    ir = (
+        "define i32 @f(i32 %a, i32 %b) {\nentry:\n"
+        "  %q = sdiv i32 %a, %b\n"
+        "  ret i32 1\n}\n"
+    )
+    assert "%q = sdiv i32 %a, %b" in dead_code_elimination(ir)
+
+
+def test_dce_removes_unused_division_by_nonzero_constant():
+    ir = (
+        "define i32 @f(i32 %a) {\nentry:\n"
+        "  %q = sdiv i32 %a, 2\n"
+        "  ret i32 1\n}\n"
+    )
+    assert "sdiv" not in dead_code_elimination(ir)
+
+
+def test_dce_unreachable_last_block_keeps_closing_brace():
+    """
+    The closing '}' of a function that is not last in the module must survive
+    when that function's final block is removed as unreachable.
+    """
+    ir = (
+        "define i32 @a() {\nentry:\n  ret i32 1\n\ndead:\n  ret i32 2\n}\n\n"
+        "define i32 @b() {\nentry:\n  ret i32 3\n}\n"
+    )
+    expected = (
+        "define i32 @a() {\nentry:\n  ret i32 1\n\n}\n\n"
+        "define i32 @b() {\nentry:\n  ret i32 3\n}\n"
+    )
+    assert dead_code_elimination(ir) == expected
+
+
+def test_passes_leave_text_before_first_function_alone():
+    ir = "; module comment\n\ndefine i32 @main() {\nentry:\n  ret i32 0\n}\n"
+    for fn in [constant_folding, dead_code_elimination,
+               common_subexpression_elimination, peephole, optimize]:
+        assert fn(ir) == ir, f"{fn.__name__} changed a module it had nothing to do in"
+
+
+# ===========================================================================
+# Regression tests: unnamed temporaries must stay numbered %0, %1, %2, ...
+# ===========================================================================
+
+import re
+
+NUMBERING_BEFORE = """\
+define i32 @f(i32 %a) {
+entry:
+  %a.addr = alloca i32
+  %r = alloca i32
+  store i32 %a, i32* %a.addr
+  %0 = load i32, i32* %a.addr
+  %mul = mul i32 0, %0
+  store i32 %mul, i32* %r
+  %1 = load i32, i32* %r
+  ret i32 %1
+}
+"""
+
+
+def _numbered_defs(ir: str):
+    return [int(n) for n in re.findall(r'^\s+%(\d+)\s*=', ir, re.MULTILINE)]
+
+
+def test_dce_renumbers_temporaries_after_removal():
+    """
+    peephole turns `mul 0, %0` into the constant 0, which makes `%0` dead.
+    Once DCE deletes `%0`, the old `%1` has to become `%0` or LLVM rejects
+    the function ("instruction expected to be numbered '%0'").
+    """
+    out = dead_code_elimination(peephole(NUMBERING_BEFORE))
+    assert "%0 = load i32, i32* %a.addr" not in out      # the dead load is gone
+    assert _numbered_defs(out) == [0]
+    assert "%0 = load i32, i32* %r" in out
+    assert "ret i32 %0" in out
+
+
+def test_renumbering_is_a_no_op_when_nothing_was_removed():
+    assert dead_code_elimination(NUMBERING_BEFORE) == NUMBERING_BEFORE
+
+
+def test_cse_renumbers_temporaries_after_removal():
+    ir = (
+        "define i32 @f(i32 %a) {\nentry:\n"
+        "  %0 = add i32 %a, 1\n"
+        "  %1 = add i32 %a, 1\n"
+        "  %2 = mul i32 %0, %1\n"
+        "  ret i32 %2\n}\n"
+    )
+    out = common_subexpression_elimination(ir)
+    assert _numbered_defs(out) == [0, 1]
+    assert "%1 = mul i32 %0, %0" in out
+    assert "ret i32 %1" in out

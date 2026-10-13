@@ -18,7 +18,7 @@ Options
     --output, -o <file>   Write optimized IR to this path (default: <name>.ll)
     --report, -r <file>   Write JSON report to this path   (default: <name>_report.json)
     --compile, -c         Also compile IR → object code    (requires llvmlite + LLVM 14)
-    --no-opt              Skip the AI advisor; apply the default pass order directly
+    --no-opt              Skip the AI advisor; use the default pass order (still verified)
     --quiet, -q           Suppress banner and step output; print IR to stdout only
 
 Environment Variables
@@ -51,7 +51,6 @@ from frontend.parser   import parse
 from frontend.semantic import analyze
 from ir.generator      import generate_ir
 from verifier.pipeline import apply_optimizations
-from optimizer.passes  import optimize as default_optimize
 
 
 # ---------------------------------------------------------------------------
@@ -167,43 +166,39 @@ def compile_source(
     _ok(quiet)
 
     # ── Step 4: Optimization ──────────────────────────────────────────────────
+    # Both modes go through the verified pipeline; --no-opt only skips the
+    # LLM advisor and uses the default pass order as the suggestion.
     if no_opt:
-        _step(4, TOTAL, "Optimization (default passes) ..... ", quiet)
-        try:
-            final_ir = default_optimize(raw_ir)
-        except Exception as e:
-            _fail(f"Optimization error: {e}")
-            return 1
-        report = {
-            "suggested_passes": ["constant_folding", "dead_code_elimination",
-                                  "common_subexpression_elimination", "peephole"],
-            "decision": "accepted",
-            "rejection_reason": None,
-            "fallback_passes": None,
-            "final_passes": ["constant_folding", "dead_code_elimination",
-                              "common_subexpression_elimination", "peephole"],
-            "mode": "no-opt (default passes, AI advisor skipped)",
-        }
-        _ok(quiet)
+        _step(4, TOTAL, "Default passes + Verification ..... ", quiet)
     else:
         _step(4, TOTAL, "AI Optimization + Verification .... ", quiet)
-        try:
-            final_ir, report = apply_optimizations(raw_ir)
-        except Exception as e:
-            _fail(f"Optimization pipeline error: {e}")
-            return 1
+    try:
+        final_ir, report = apply_optimizations(raw_ir, use_advisor=not no_opt)
+    except Exception as e:
+        _fail(f"Optimization pipeline error: {e}")
+        return 1
+    if no_opt:
+        report["mode"] = "no-opt (default passes, AI advisor skipped)"
 
-        if not quiet:
-            decision = report.get("decision", "unknown")
-            colour   = _GREEN if decision == "accepted" else _YELLOW
-            print(f"  {_c('✓', _GREEN)}")
-            print(f"       Suggested : {report.get('suggested_passes')}")
-            print(f"       Decision  : {_c(decision.upper(), colour, _BOLD)}", end="")
-            if decision == "rejected":
-                print(f"  ({report.get('rejection_reason', '')})")
-            else:
-                print()
-            print(f"       Applied   : {report.get('final_passes')}")
+    if not quiet:
+        decision = report.get("decision", "unknown")
+        colour   = _GREEN if decision == "accepted" else _YELLOW
+        print(f"  {_c('✓', _GREEN)}")
+        print(f"       Suggested : {report.get('suggested_passes')}")
+        print(f"       Decision  : {_c(decision.upper(), colour, _BOLD)}", end="")
+        if decision == "rejected":
+            print(f"  ({report.get('rejection_reason', '')})")
+        else:
+            print()
+        fallback_decision = report.get("fallback_decision")
+        if fallback_decision == "accepted":
+            print(f"       Fallback  : {_c('ACCEPTED', _GREEN, _BOLD)}"
+                  f"  (default pass order verified)")
+        elif fallback_decision == "rejected":
+            print(f"       Fallback  : {_c('REJECTED', _YELLOW, _BOLD)}"
+                  f"  ({report.get('fallback_rejection_reason', '')})")
+            print("                   IR left unoptimized")
+        print(f"       Applied   : {report.get('final_passes')}")
 
     # ── Write IR ──────────────────────────────────────────────────────────────
     ir_path = Path(output_ir)
@@ -271,7 +266,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--compile", "-c",   action="store_true",
                    help="Also compile IR → object code (requires llvmlite + LLVM 14)")
     p.add_argument("--no-opt",          action="store_true",
-                   help="Skip AI advisor; apply default pass order directly")
+                   help="Skip AI advisor; use the default pass order (still verified)")
     p.add_argument("--quiet", "-q",     action="store_true",
                    help="Suppress step output; print optimized IR to stdout only")
     return p
