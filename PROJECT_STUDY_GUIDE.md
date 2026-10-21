@@ -218,7 +218,7 @@ This is the core of the safety argument.
 
 ### 4.8 Tests and CI
 
-- There are about **314 test functions** across 14 files in `tests/`. They cover:
+- There are **553 tests** (314 test functions, some run over several inputs) across 14 files in `tests/`. All 553 pass. They cover:
     - the lexer, parser and semantic analysis;
     - IR generation, checked against the `.ll` samples;
     - each optimizer pass, the advisor (with mocked LLM replies) and the verifier;
@@ -357,9 +357,8 @@ Outputs go to `build/<name>.ll` and `build/<name>_report.json`. Open the JSON re
 
 **Before the demo:**
 
-- `pytest` is not installed in your current Python. Run the `pip install` step above first.
-- `git status` shows `tests/samples/05_func_call.ll` as modified: the line `mul i32 %0, 2` was replaced by the optimized `add i32 %0, %0`. That file is the **ground truth** for the IR generator tests. An earlier run probably wrote its output over it (an `-o` into `tests/samples/`). Restore it with `git checkout tests/samples/05_func_call.ll`, or a test may fail live.
-- There are also stray `*_report.json` and `02_add.o` files in `tests/samples/` from those runs.
+- Run the `pip install` step above first.
+- Never use `-o` to write output into `tests/samples/`. The `.ll` files there are the expected results the tests compare against, and overwriting one makes 2 tests fail.
 
 ---
 
