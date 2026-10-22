@@ -338,12 +338,15 @@ Pipeline rules:
 ### `main.py` (command line)
 
 ```
-python main.py <source.c> [-o FILE] [-r FILE] [--compile] [--no-advisor] [--quiet]
+python main.py <source.c | -> [-o FILE] [-r FILE] [--compile] [--no-advisor] [--quiet]
+               [--show-steps] [--interactive]
 ```
 
 - The IR and the JSON report go to `build/<name>.ll` and `build/<name>_report.json`, with `build/` in the current working directory. They never go next to the source unless `-o` / `-r` say so. `--compile` writes `<ir path minus .ll>.o`.
 - `--no-advisor` calls `apply_optimizations(ir, use_advisor=False)`. `--no-opt` is an alias kept for old scripts; despite its name, the default passes still run.
 - Before reporting success, the final IR is checked with `verify_ir()`, and with `llvm_check()` when llvmlite is installed. The result goes in the report as `final_ir_check = {verify_ir, llvm, llvm_error, passed}`. A failed check still writes the IR so it can be inspected, skips `--compile`, and makes the exit status non-zero.
+- `--show-steps` prints every stage's output (`show_steps.py`): source, tokens, AST, symbols, raw IR, the IR after each pass, the verifier's runs, the decision, the final check and IR. It changes neither the IR nor the report. With `--quiet` it is ignored.
+- `--interactive` (or `-` as the source) reads the program from stdin. Output defaults to `build/input.ll`, and the report's `source_file` is `"<stdin>"`.
 - Exit status: `0` on success. `1` for any error: unreadable source, a parse, semantic or IR-generation error, a failed final IR check, or a `--compile` that produced no object file.
 - Besides the pipeline's keys, the report holds `source_file`, `ir_output`, `exit_code` and `elapsed_s`. It also holds `final_ir_check` (see above), `mode` (with `--no-advisor` only) and, with `--compile`, `object_output` and `compile_error`.
 

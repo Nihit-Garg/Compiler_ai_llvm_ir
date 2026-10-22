@@ -12,6 +12,7 @@ Full pipeline driver:
 Usage
 -----
     python main.py <source.c> [options]
+    python main.py --interactive [options]     (type the program, end with Ctrl-D)
 
 Options
 -------
@@ -21,6 +22,12 @@ Options
     --no-advisor          Do not ask the LLM; use the default pass order (still verified).
                           --no-opt is an older alias: it does NOT turn optimization off.
     --quiet, -q           Suppress banner and step output; print IR to stdout only
+    --show-steps, -s      Print the output of every stage: tokens, AST, symbols,
+                          raw IR, the IR after each pass, the verifier's test
+                          runs and the final check
+    --interactive, -i     Read the program from the terminal (stdin) instead of
+                          a file; "-" as the source does the same.  Output goes
+                          to build/input.ll unless -o says otherwise
 
 The default build/ folder is created in the current working directory, so the
 source folder (and the expected-output files in tests/samples/) is never
@@ -46,6 +53,7 @@ Example
     export GEMINI_API_KEY="..."
     python main.py tests/samples/02_add.c
     python main.py tests/samples/04_while.c --compile
+    python main.py evaluation/benchmarks/b8_simplify_then_fold.c --show-steps
 """
 
 import sys
@@ -53,6 +61,7 @@ import json
 import time
 import argparse
 from pathlib import Path
+from typing import Optional
 
 # ── Ensure project root is on sys.path ───────────────────────────────────────
 ROOT = Path(__file__).parent.resolve()
@@ -65,8 +74,10 @@ from frontend.semantic import analyze
 from ir.generator      import generate_ir
 from verifier.pipeline import apply_optimizations
 from verifier.check    import verify_ir, llvm_check, LLVM_FAILED
+import show_steps as steps
 
 DEFAULT_BUILD_DIR = "build"
+STDIN_SOURCE = "<stdin>"     # source_file in the report for --interactive
 
 
 # ---------------------------------------------------------------------------
@@ -132,11 +143,20 @@ def compile_source(
     do_compile: bool,
     no_opt: bool,
     quiet: bool,
+    show: bool = False,
+    source_text: Optional[str] = None,
 ) -> int:
-    """Run the full compiler pipeline. Returns exit code (0 = success)."""
+    """
+    Run the full compiler pipeline. Returns exit code (0 = success).
+
+    show:        print every stage's output (--show-steps); ignored with quiet.
+    source_text: the program itself, when it was typed in rather than read
+                 from source_path (--interactive).
+    """
+    show = show and not quiet
 
     src_path = Path(source_path)
-    if not src_path.exists():
+    if source_text is None and not src_path.exists():
         _fail(f"File not found: {source_path}")
         return 1
 
@@ -148,8 +168,14 @@ def compile_source(
     t_start = time.perf_counter()
 
     # ── Read source ───────────────────────────────────────────────────────────
-    with open(src_path, encoding="utf-8") as f:
-        source = f.read()
+    if source_text is not None:
+        source = source_text
+    else:
+        with open(src_path, encoding="utf-8") as f:
+            source = f.read()
+    if show:
+        steps.show_source(source)
+        print()
 
     TOTAL = 4 if not do_compile else 5
 
@@ -162,6 +188,10 @@ def compile_source(
         _fail(f"Parse error: {e}")
         return 1
     _ok(quiet)
+    if show:
+        steps.show_tokens(tokens)
+        steps.show_ast(ast)
+        print()
 
     # ── Step 2: Semantic Analysis ─────────────────────────────────────────────
     _step(2, TOTAL, "Semantic Analysis ................. ", quiet)
@@ -171,6 +201,9 @@ def compile_source(
         _fail(f"Semantic error: {e}")
         return 1
     _ok(quiet)
+    if show:
+        steps.show_symbols(ast)
+        print()
 
     # ── Step 3: IR Generation ─────────────────────────────────────────────────
     _step(3, TOTAL, "IR Generation ..................... ", quiet)
@@ -180,6 +213,9 @@ def compile_source(
         _fail(f"IR generation error: {e}")
         return 1
     _ok(quiet)
+    if show:
+        steps.show_ir("Step 3: Generated LLVM IR (unoptimized)", raw_ir)
+        print()
 
     # ── Step 4: Optimization ──────────────────────────────────────────────────
     # Both modes go through the verified pipeline; --no-advisor (no_opt) only
@@ -220,6 +256,8 @@ def compile_source(
         print(f"       Applied   : {report.get('final_passes')}")
         print(f"       Size      : {report.get('instructions_before')} → "
               f"{report.get('instructions_after')} instructions")
+    if show:
+        steps.show_optimization(raw_ir, report)
 
     exit_code = 0
 
@@ -240,6 +278,10 @@ def compile_source(
         problem = llvm_error if llvm_status == LLVM_FAILED else "verify_ir() rejected it"
         _fail(f"Final IR check failed: {problem}")
         exit_code = 1
+    if show:
+        steps.show_final_check(report["final_ir_check"])
+        steps.show_ir("Final optimized IR", final_ir)
+        print()
 
     # ── Write IR ──────────────────────────────────────────────────────────────
     # Written even when the final check failed, so it can be inspected; the
@@ -267,6 +309,8 @@ def compile_source(
                     f.write(obj_bytes)
                 report["object_output"] = str(obj_path)
                 _ok(quiet)
+                if show:
+                    steps.show_object(obj_path, obj_bytes)
             except Exception as e:
                 report["compile_error"] = f"{type(e).__name__}: {e}"
                 obj_path = None
@@ -276,7 +320,7 @@ def compile_source(
             exit_code = 1
 
     # ── Write report ──────────────────────────────────────────────────────────
-    report["source_file"] = str(src_path)
+    report["source_file"] = STDIN_SOURCE if source_text is not None else str(src_path)
     report["ir_output"]   = str(ir_path)
     report["exit_code"]   = exit_code
     report["elapsed_s"]   = round(time.perf_counter() - t_start, 3)
@@ -315,7 +359,8 @@ def _build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__.split("Example")[1] if "Example" in __doc__ else "",
     )
-    p.add_argument("source",            help="Path to the MiniC .c source file")
+    p.add_argument("source", nargs="?",
+                   help="Path to the MiniC .c source file (\"-\" reads it from stdin)")
     p.add_argument("--output", "-o",    help="Write optimized IR here (default: build/<name>.ll)")
     p.add_argument("--report", "-r",    help="Write JSON report here (default: build/<name>_report.json)")
     p.add_argument("--compile", "-c",   action="store_true",
@@ -326,7 +371,22 @@ def _build_parser() -> argparse.ArgumentParser:
                         "scripts; it does not disable optimization")
     p.add_argument("--quiet", "-q",     action="store_true",
                    help="Suppress step output; print optimized IR to stdout only")
+    p.add_argument("--show-steps", "-s", dest="show_steps", action="store_true",
+                   help="Print the output of every stage: tokens, AST, symbols, "
+                        "raw IR, the IR after each pass, the verifier's test runs "
+                        "and the final check")
+    p.add_argument("--interactive", "-i", action="store_true",
+                   help="Type the program in the terminal instead of giving a "
+                        "file; end it with Ctrl-D (Ctrl-Z then Enter on Windows)")
     return p
+
+
+def _read_program_from_stdin() -> str:
+    """Read a MiniC program typed in the terminal (or piped in)."""
+    if sys.stdin.isatty():
+        print("Type your MiniC program. Finish with Ctrl-D "
+              "(Ctrl-Z then Enter on Windows):", file=sys.stderr)
+    return sys.stdin.read()
 
 
 def _make_output_encoding_safe() -> None:
@@ -344,10 +404,16 @@ def _make_output_encoding_safe() -> None:
 
 def main() -> int:
     _make_output_encoding_safe()
-    args = _build_parser().parse_args()
+    parser = _build_parser()
+    args = parser.parse_args()
 
-    src   = Path(args.source)
-    stem  = src.stem
+    from_stdin = args.interactive or args.source == "-"
+    if not from_stdin and not args.source:
+        parser.error("give a source file, or use --interactive to type the program")
+    source_text = _read_program_from_stdin() if from_stdin else None
+
+    src   = Path(STDIN_SOURCE if from_stdin else args.source)
+    stem  = "input" if from_stdin else src.stem
     build = Path(DEFAULT_BUILD_DIR)
 
     ir_out  = args.output  or str(build / f"{stem}.ll")
@@ -360,6 +426,8 @@ def main() -> int:
         do_compile=args.compile,
         no_opt=args.no_advisor,
         quiet=args.quiet,
+        show=args.show_steps,
+        source_text=source_text,
     )
 
 

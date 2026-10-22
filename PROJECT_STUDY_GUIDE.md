@@ -218,7 +218,7 @@ This is the core of the safety argument.
 
 ### 4.8 Tests and CI
 
-- There are **553 tests** (314 test functions, some run over several inputs) across 14 files in `tests/`. All 553 pass. They cover:
+- There are **563 tests** (322 test functions, some run over several inputs) across 14 files in `tests/`. All 563 pass. They cover:
     - the lexer, parser and semantic analysis;
     - IR generation, checked against the `.ll` samples;
     - each optimizer pass, the advisor (with mocked LLM replies) and the verifier;
@@ -352,6 +352,15 @@ python main.py tests/samples/02_add.c --compile                     # also write
 python evaluation/run_eval.py          # rebuild the results tables from saved LLM answers (no API key)
 python evaluation/run_eval.py --live   # ask Gemini again (slow: 30–100 s per program)
 ```
+
+**Show every step (for the teacher):**
+
+```bash
+python main.py evaluation/benchmarks/b8_simplify_then_fold.c --show-steps
+python main.py --interactive --show-steps     # type a program, then press Ctrl-D
+```
+
+This prints the source, tokens, AST, symbol table, unoptimized IR, the IR after each pass with its instruction count, the verifier's table (each input with the original result, the optimized result and ✓ or ✗), the decision, the final check and the final IR. Typed programs are written to `build/input.ll`.
 
 Outputs go to `build/<name>.ll` and `build/<name>_report.json`. Open the JSON report during the demo: it shows `suggested_passes`, `decision`, `advisor_source` and `instructions_before` / `instructions_after`.
 

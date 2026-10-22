@@ -113,6 +113,12 @@ llvmlite 0.40.0 has no wheels for Python 3.12 or later. On 3.12 and 3.13, `pip i
 
    Other options: `--no-advisor` skips the LLM and applies the default pass order, which is still verified. `--no-opt` is an old alias for it, and despite the name it does not turn optimization off. `--quiet` prints only the IR. Exit status is 0 on success and 1 on any error, including a failed final IR check or a failed `--compile`.
 
+   **See every step.** `--show-steps` (or `-s`) prints what each stage produced: the source, the tokens, the AST, the symbol table, the unoptimized IR, the IR after each pass, the verifier's test inputs with the original and optimized results, the decision and the final IR. `--interactive` (or `-i`, or `-` as the source) reads the program from the terminal instead of a file; type it and finish with Ctrl-D (Ctrl-Z then Enter on Windows). Output then goes to `build/input.ll`.
+   ```bash
+   python main.py evaluation/benchmarks/b8_simplify_then_fold.c --show-steps
+   python main.py --interactive --show-steps
+   ```
+
 5. Optional: to use the LLM advisor, copy `.env.example` to `.env` and set `GEMINI_API_KEY`. Without a key, the default pass order is used, and the report says so (`advisor_source: "no_api_key"`).
 
 See `docs/SPEC.md` for the language grammar and detailed module contracts before contributing.
